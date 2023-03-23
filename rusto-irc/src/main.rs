@@ -46,6 +46,7 @@ async fn irc_stream_handler(
 ) -> Result<(), Box<dyn std::error::Error>> {
     while let Some(message) = stream.next().await.transpose()? {
         println!("{:?}", message);
+        #[allow(clippy::single_match)]
         match message.command {
             Command::PRIVMSG(_, ref text) => {
                 if let Some(args) = text.strip_prefix("!add ") {
@@ -69,9 +70,6 @@ async fn irc_stream_handler(
                         }
                     });
                 }
-                // if let Some(response_target) = message.response_target() {
-                //     client.send_privmsg(response_target, text)?;
-                // }
             }
             _ => {}
         }

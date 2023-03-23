@@ -11,7 +11,7 @@ use crate::runtime as rt;
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("wasm runtime error: {0}")]
-    WasmError(anyhow::Error),
+    Wasm(anyhow::Error),
     #[error("invalid module name")]
     InvalidModuleName,
     #[error("no such module")]
@@ -19,7 +19,7 @@ pub enum Error {
     #[error("no such function")]
     FunctionNotFound,
     #[error("wrong function signature")]
-    FunctionTypeError,
+    WrongFunctionType,
     #[error("memory is not exported")]
     MemoryNotExported,
     #[error("invalid pointer")]
@@ -52,7 +52,7 @@ impl Service {
         let engine = Engine::default();
         let mut linker = Linker::new(&engine);
         rt::add_to_linker(&mut linker, true)
-            .map_err(Error::WasmError)
+            .map_err(Error::Wasm)
             .expect("runtime linking should be possible without shadowing");
 
         Service {
@@ -79,7 +79,7 @@ impl Service {
                     break;
                 }
             };
-            if let Err(_) = tx.send(result).await {
+            if tx.send(result).await.is_err() {
                 break;
             };
         }
@@ -100,7 +100,7 @@ impl Service {
             .ok_or(Error::InvalidModuleName)?
             .to_string();
 
-        let module = Module::from_file(&self.engine, &path).map_err(Error::WasmError)?;
+        let module = Module::from_file(&self.engine, &path).map_err(Error::Wasm)?;
 
         let mut modules = self.modules.lock().await;
         modules.insert(canonical_name.clone(), module);
@@ -126,18 +126,24 @@ impl Service {
         let instance = self
             .linker
             .instantiate(&mut store, module)
-            .map_err(Error::WasmError)?;
+            .map_err(Error::Wasm)?;
 
         let func = instance
             .get_func(&mut store, &entry_point)
             .ok_or(Error::FunctionNotFound)?;
         let tyfunc = func
             .typed::<(), ()>(&mut store)
-            .map_err(|_| Error::FunctionTypeError)?;
+            .map_err(|_| Error::WrongFunctionType)?;
 
-        tyfunc.call(&mut store, ()).map_err(Error::WasmError)?;
+        tyfunc.call(&mut store, ()).map_err(Error::Wasm)?;
 
         Ok(store.into_data().output)
+    }
+}
+
+impl Default for Service {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -166,7 +172,7 @@ impl HasOutput for RuntimeData {
     }
 }
 
-pub(crate) fn get_memory<'a, T>(caller: &'a mut Caller<'_, T>) -> Result<Memory> {
+pub(crate) fn get_memory<T>(caller: &mut Caller<'_, T>) -> Result<Memory> {
     let mem = caller
         .get_export("memory")
         .ok_or(Error::MemoryNotExported)?

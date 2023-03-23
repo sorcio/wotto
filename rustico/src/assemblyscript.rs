@@ -57,10 +57,10 @@ impl<'m> AssemblyScriptObject<'m> {
             return None;
         }
         let ptr = memory[offset..].as_ptr() as *const _;
-        return Some(Self {
+        Some(Self {
             ptr,
             _marker: PhantomData,
-        });
+        })
     }
 
     #[inline]

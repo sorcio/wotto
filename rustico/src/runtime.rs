@@ -37,7 +37,7 @@ fn input<T: HasInput>(mut caller: Caller<'_, T>, ptr: u32, len: u32) -> WResult<
     let message = runtime_data.input().as_bytes();
     let actual_size = message.len();
     if size >= actual_size {
-        buf[..actual_size].copy_from_slice(&message);
+        buf[..actual_size].copy_from_slice(message);
     } else {
         buf.copy_from_slice(&message[..size]);
     }
