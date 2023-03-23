@@ -1,3 +1,5 @@
+//! AssemblyScript support.
+
 use std::fmt::Display;
 use std::marker::PhantomData;
 use std::mem::size_of;
@@ -5,6 +7,12 @@ use std::mem::size_of;
 use wasmtime::{Caller, Trap};
 
 use crate::service::{get_memory, Error, WResult};
+
+#[allow(dead_code)]
+const AS_CLASS_ID_OBJECT: u32 = 0;
+#[allow(dead_code)]
+const AS_CLASS_ID_BUFFER: u32 = 1;
+const AS_CLASS_ID_STRING: u32 = 2;
 
 #[allow(dead_code, non_snake_case)]
 #[repr(packed)]
@@ -99,42 +107,6 @@ impl Display for AssemblyScriptString<'_> {
         f.write_str(&self.string())
     }
 }
-
-const AS_CLASS_ID_STRING: u32 = 2;
-
-// pub(crate) fn get_assemblyscript_string(memory: &[u8], ptr: u32) -> Option<String> {
-//     let offset = ptr as usize;
-//     if offset > memory.len() {
-//         return None;
-//     }
-//     let header_size = std::mem::size_of::<AssemblyScriptHeader>();
-//     let header_offset = offset.checked_sub(header_size)?;
-//     let header_ptr = memory[header_offset..offset].as_ptr() as *const AssemblyScriptHeader;
-//     let header = if header_ptr.is_aligned() {
-//         // Safe to be dereferenced because we have a shared ref to data, but
-//         // lifetime is toxic outside of this function.
-//         unsafe { &*header_ptr }
-//     } else {
-//         // Don't think this can ever happen
-//         return None;
-//     };
-
-//     if header.rtId != AS_CLASS_ID_STRING {
-//         return None;
-//     }
-//     let size = header.rtSize as usize;
-//     if offset + size > memory.len() {
-//         return None;
-//     }
-//     let strdata = &memory[offset..][..size];
-//     // payload pointer is aligned because header is aligned
-//     let (prefix, mid, _) = unsafe { strdata.align_to::<u16>() };
-//     if prefix.is_empty() {
-//         Some(String::from_utf16_lossy(mid))
-//     } else {
-//         unreachable!();
-//     }
-// }
 
 pub(crate) fn env_abort<T>(
     mut caller: Caller<'_, T>,
