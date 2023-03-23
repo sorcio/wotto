@@ -1,0 +1,13 @@
+[package]
+name = "rustico-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rustico"
+path = "src/main.rs"
+
+[dependencies]
+rustico = { path = "../rustico", features = ["repl"] }
+anyhow = "1.0"
+tokio = "*"

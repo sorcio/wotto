@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "rustico",
+    "rusto-irc",
+    "rustico-cli",
+]
