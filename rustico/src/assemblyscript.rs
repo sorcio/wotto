@@ -4,7 +4,7 @@ use std::mem::size_of;
 
 use wasmtime::{Caller, Trap};
 
-use crate::service::{get_memory, WResult, Error};
+use crate::service::{get_memory, Error, WResult};
 
 #[allow(dead_code, non_snake_case)]
 #[repr(packed)]

@@ -5,7 +5,7 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use tokio::sync::mpsc;
 
-use crate::service::{Command, Service, Result as RusticoResult};
+use crate::service::{Command, Result as RusticoResult, Service};
 
 pub async fn repl() -> Result<()> {
     let svc = Service::new();
@@ -19,7 +19,9 @@ pub async fn repl() -> Result<()> {
     // Tokio recommends to use normal blocking I/O for interactive stdin/out.
     // We do it in a thread so we don't have to mix blocking and async style.
     let (req_tx, mut resp_rx) = std::thread::scope(|s| {
-        s.spawn(move || command_parser(req_tx, resp_rx)).join().unwrap()
+        s.spawn(move || command_parser(req_tx, resp_rx))
+            .join()
+            .unwrap()
     })?;
 
     println!("Shutting down rustico service...");
@@ -36,7 +38,10 @@ type ReqTx = mpsc::Sender<Command>;
 type RespRx = mpsc::Receiver<RusticoResult<String>>;
 
 fn command_parser(tx: ReqTx, mut resp: RespRx) -> Result<(ReqTx, RespRx)> {
-    println!("rustico CLI {}", option_env!("CARGO_PKG_VERSION").unwrap_or("dev"));
+    println!(
+        "rustico CLI {}",
+        option_env!("CARGO_PKG_VERSION").unwrap_or("dev")
+    );
     let mut rl = DefaultEditor::new()?;
     loop {
         let readline = rl.readline(">> ");
@@ -49,7 +54,9 @@ fn command_parser(tx: ReqTx, mut resp: RespRx) -> Result<(ReqTx, RespRx)> {
                     match resp.blocking_recv() {
                         Some(Ok(response)) => println!("++ {response}"),
                         Some(Err(error)) => println!("!! {error}"),
-                        None => { break; }
+                        None => {
+                            break;
+                        }
                     }
                 } else {
                     println!("Cannot parse input.")

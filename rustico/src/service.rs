@@ -32,7 +32,11 @@ pub(crate) type WResult<T> = std::result::Result<T, anyhow::Error>;
 #[derive(Debug)]
 pub enum Command {
     LoadModule(String),
-    RunModule { module: String, entry_point: String, args: String },
+    RunModule {
+        module: String,
+        entry_point: String,
+        args: String,
+    },
     Quit,
     Idle,
 }
@@ -60,8 +64,12 @@ impl Service {
                     entry_point,
                     args,
                 } => self.run_module(module, entry_point, args).await,
-                Command::Idle => { continue; },
-                Command::Quit => { break; }
+                Command::Idle => {
+                    continue;
+                }
+                Command::Quit => {
+                    break;
+                }
             };
             if let Err(_) = tx.send(result).await {
                 break;
@@ -76,7 +84,13 @@ impl Service {
         let name_as_path = PathBuf::from_str(&name).map_err(|_| Error::InvalidModuleName)?;
         let file_name = name_as_path.file_name().ok_or(Error::InvalidModuleName)?;
         let path = Path::new(MODULES_PATH).join(file_name);
-        let canonical_name = path.with_extension("").file_name().unwrap().to_str().ok_or(Error::InvalidModuleName)?.to_string();
+        let canonical_name = path
+            .with_extension("")
+            .file_name()
+            .unwrap()
+            .to_str()
+            .ok_or(Error::InvalidModuleName)?
+            .to_string();
 
         let module = Module::from_file(&self.engine, &path).map_err(Error::WasmError)?;
 
@@ -86,10 +100,14 @@ impl Service {
         Ok(canonical_name)
     }
 
-    pub async fn run_module(&self, module_name: String, entry_point: String, args: String) -> Result<String> {
+    pub async fn run_module(
+        &self,
+        module_name: String,
+        entry_point: String,
+        args: String,
+    ) -> Result<String> {
         let modules = self.modules.lock().await;
         let module = modules.get(&module_name).ok_or(Error::ModuleNotFound)?;
-
 
         let mut linker = Linker::new(&self.engine);
 
@@ -112,7 +130,8 @@ impl Service {
                 "rusto",
                 "output",
                 |mut caller: Caller<'_, RuntimeData>, ptr: u32, len: u32| -> WResult<()> {
-                    let (memory, runtime_data) = get_memory(&mut caller)?.data_and_store_mut(&mut caller);
+                    let (memory, runtime_data) =
+                        get_memory(&mut caller)?.data_and_store_mut(&mut caller);
                     let offset = ptr as usize;
                     let size = len as usize;
                     let strdata = &memory[offset..][..size];
@@ -128,7 +147,8 @@ impl Service {
                 "rusto",
                 "input",
                 |mut caller: Caller<'_, RuntimeData>, ptr: u32, len: u32| -> WResult<u32> {
-                    let (memory, runtime_data) = get_memory(&mut caller)?.data_and_store_mut(&mut caller);
+                    let (memory, runtime_data) =
+                        get_memory(&mut caller)?.data_and_store_mut(&mut caller);
 
                     let offset = ptr as usize;
                     let size = len as usize;
@@ -150,7 +170,10 @@ impl Service {
             .func_wrap("env", "abort", env_abort)
             .map_err(Error::WasmError)?;
 
-        let runtime_data = RuntimeData { message: args, output: String::with_capacity(512) };
+        let runtime_data = RuntimeData {
+            message: args,
+            output: String::with_capacity(512),
+        };
         let mut store = Store::new(&self.engine, runtime_data);
 
         let instance = linker
