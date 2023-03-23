@@ -6,7 +6,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
 use wasmtime::*;
 
-use crate::assemblyscript::{env_abort, AssemblyScriptString};
+use crate::runtime as rt;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -44,13 +44,21 @@ pub enum Command {
 pub struct Service {
     engine: Engine,
     modules: Arc<Mutex<HashMap<String, Module>>>,
+    linker: Linker<RuntimeData>,
 }
 
 impl Service {
     pub fn new() -> Self {
+        let engine = Engine::default();
+        let mut linker = Linker::new(&engine);
+        rt::add_to_linker(&mut linker, true)
+            .map_err(Error::WasmError)
+            .expect("runtime linking should be possible without shadowing");
+
         Service {
-            engine: Engine::default(),
+            engine,
             modules: Arc::new(HashMap::new().into()),
+            linker,
         }
     }
 
@@ -109,74 +117,14 @@ impl Service {
         let modules = self.modules.lock().await;
         let module = modules.get(&module_name).ok_or(Error::ModuleNotFound)?;
 
-        let mut linker = Linker::new(&self.engine);
-
-        // AS-style print, remove later
-        linker
-            .func_wrap(
-                "rusto",
-                "print",
-                |mut caller: Caller<'_, _>, ptr: u32| -> WResult<()> {
-                    let memory = get_memory(&mut caller)?.data(&caller);
-                    let txt = AssemblyScriptString::from_memory(memory, ptr)
-                        .ok_or(Error::InvalidPointer)?;
-                    println!("rusto.print {txt}");
-                    Ok(())
-                },
-            )
-            .map_err(Error::WasmError)?;
-        linker
-            .func_wrap(
-                "rusto",
-                "output",
-                |mut caller: Caller<'_, RuntimeData>, ptr: u32, len: u32| -> WResult<()> {
-                    let (memory, runtime_data) =
-                        get_memory(&mut caller)?.data_and_store_mut(&mut caller);
-                    let offset = ptr as usize;
-                    let size = len as usize;
-                    let strdata = &memory[offset..][..size];
-                    let txt = std::str::from_utf8(strdata)?;
-                    println!("rusto.output {txt}");
-                    runtime_data.output += txt;
-                    Ok(())
-                },
-            )
-            .map_err(Error::WasmError)?;
-        linker
-            .func_wrap(
-                "rusto",
-                "input",
-                |mut caller: Caller<'_, RuntimeData>, ptr: u32, len: u32| -> WResult<u32> {
-                    let (memory, runtime_data) =
-                        get_memory(&mut caller)?.data_and_store_mut(&mut caller);
-
-                    let offset = ptr as usize;
-                    let size = len as usize;
-                    let buf = &mut memory[offset..][..size];
-
-                    let message = runtime_data.message.as_bytes();
-                    let actual_size = message.len();
-                    if size >= actual_size {
-                        buf[..actual_size].copy_from_slice(&message);
-                    } else {
-                        buf.copy_from_slice(&message[..size]);
-                    }
-
-                    Ok(actual_size.try_into().unwrap())
-                },
-            )
-            .map_err(Error::WasmError)?;
-        linker
-            .func_wrap("env", "abort", env_abort)
-            .map_err(Error::WasmError)?;
-
         let runtime_data = RuntimeData {
             message: args,
             output: String::with_capacity(512),
         };
         let mut store = Store::new(&self.engine, runtime_data);
 
-        let instance = linker
+        let instance = self
+            .linker
             .instantiate(&mut store, module)
             .map_err(Error::WasmError)?;
 
@@ -198,6 +146,26 @@ struct RuntimeData {
     output: String,
 }
 
+pub(crate) trait HasInput {
+    fn input(&self) -> &str;
+}
+
+pub(crate) trait HasOutput {
+    fn output(&mut self, text: &str);
+}
+
+impl HasInput for RuntimeData {
+    fn input(&self) -> &str {
+        &self.message
+    }
+}
+
+impl HasOutput for RuntimeData {
+    fn output(&mut self, text: &str) {
+        self.output += text;
+    }
+}
+
 pub(crate) fn get_memory<'a, T>(caller: &'a mut Caller<'_, T>) -> Result<Memory> {
     let mem = caller
         .get_export("memory")
@@ -206,12 +174,3 @@ pub(crate) fn get_memory<'a, T>(caller: &'a mut Caller<'_, T>) -> Result<Memory>
         .ok_or(Error::MemoryNotExported)?;
     Ok(mem)
 }
-
-// pub(crate) fn get_memory_mut<'a, T>(caller: &'a mut Caller<'_, T>) -> Result<&'a mut [u8]> {
-//     let mem = caller
-//         .get_export("memory")
-//         .ok_or(Error::MemoryNotExported)?
-//         .into_memory()
-//         .ok_or(Error::MemoryNotExported)?;
-//     Ok(mem.data_mut(caller))
-// }
