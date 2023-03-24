@@ -83,7 +83,7 @@ mod state {
 
     impl TrustedUsers {
         fn is_trusted(&self, mask: &UserMask) -> bool {
-            self.list.iter().find(|x| *x == mask).is_some()
+            self.list.iter().any(|x| x == mask)
         }
 
         fn is_trusted_prefix(&self, prefix: Option<Prefix>) -> bool {
@@ -108,7 +108,6 @@ mod state {
         }
     }
 
-    #[must_use]
     async fn check_trust(state: &BotState, prefix: Option<Prefix>) -> bool {
         state.trusted.read().await.is_trusted_prefix(prefix)
     }
@@ -157,17 +156,14 @@ mod state {
                     if !check_trust(&slf, source).await {
                         return;
                     }
-                    match Prefix::new_from_str(cmd.args()).try_into() {
-                        Ok(mask) => {
-                            let mut trusted = slf.trusted.write().await;
-                            let message = if trusted.add_trust(&mask) {
-                                format!("I now trust {}", mask.nick)
-                            } else {
-                                format!("I already trust this user")
-                            };
-                            let _ = slf.client.send_notice(response_target, message);
-                        }
-                        Err(_) => {}
+                    if let Ok(mask) = Prefix::new_from_str(cmd.args()).try_into() {
+                        let mut trusted = slf.trusted.write().await;
+                        let message = if trusted.add_trust(&mask) {
+                            format!("I now trust {}", mask.nick)
+                        } else {
+                            "I already trust this user".to_string()
+                        };
+                        let _ = slf.client.send_notice(response_target, message);
                     }
                 }
                 CommandName::Plain(x) if x == "load" => {
@@ -181,7 +177,7 @@ mod state {
                             Ok(name) => format!("loaded module: {name}"),
                             Err(error) => {
                                 eprintln!("management load failed: {error}");
-                                format!("cannot load module (check logs)")
+                                "cannot load module (check logs)".to_string()
                             }
                         };
                         let _ = state.client().send_notice(response_target, response);
@@ -255,9 +251,8 @@ fn handle_command<F, Fut>(
             });
             return;
         }
-        CommandName::Namespaced(ns, name) => (ns.to_string(), name.to_string()),
+        CommandName::Namespaced(ns, name) => (ns, name),
     };
-    let state = state.clone();
     tokio::spawn(async move {
         match state
             .rustico()
