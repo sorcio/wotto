@@ -555,16 +555,6 @@ enum CommandName {
     Namespaced(String, String),
 }
 
-// impl CommandName {
-//     fn parse(raw: &str) -> Self {
-//         if let Some((ns, name)) = raw.split_once('.') {
-//             Self::Namespaced(ns.to_string(), name.to_string())
-//         } else {
-//             Self::Plain(raw.to_string())
-//         }
-//     }
-// }
-
 #[derive(Debug, Clone)]
 pub(crate) struct BotCommand {
     // prefix: String,
@@ -575,21 +565,6 @@ pub(crate) struct BotCommand {
 impl BotCommand {
     fn parse(_prefixes: &[&str], text: &str) -> Result<Self, ParseError> {
         command_parser::command(text).map_err(|_| ParseError)
-        // let (_prefix, stripped) = prefixes
-        //     .iter()
-        //     .find_map(|prefix| {
-        //         let i = text.find(prefix)? + prefix.len();
-        //         Some((&text[..i], text[i..].trim()))
-        //     })
-        //     .ok_or(ParseError)?;
-        // let (raw_command, raw_args) = stripped.split_once(' ').ok_or(ParseError)?;
-        // let command = CommandName::parse(raw_command);
-        // let args = raw_args.trim();
-        // Ok(Self {
-        //     // prefix: prefix.to_string(),
-        //     command,
-        //     args: args.to_string(),
-        // })
     }
 
     pub(crate) fn command(&self) -> &CommandName {
