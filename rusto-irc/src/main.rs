@@ -1,4 +1,5 @@
 mod parsing;
+mod throttling;
 
 use std::sync::Arc;
 
@@ -86,6 +87,7 @@ mod state {
     use irc::proto::Prefix;
     use tokio::sync::RwLock;
 
+    use crate::throttling::Throttler;
     use crate::{BotCommand, CommandName, UserMask};
 
     struct TrustedUsers {
@@ -141,14 +143,21 @@ mod state {
         client: Client,
         rustico: rustico::Service,
         trusted: RwLock<TrustedUsers>,
+        throttler: Throttler,
     }
 
     impl BotState {
         pub(crate) fn new(client: Client, rustico: rustico::Service) -> Self {
+            let throttler = Throttler::make()
+                .layer(5, 2500)
+                .layer(2, 150)
+                .layer(1, 50)
+                .build();
             Self {
                 client,
                 rustico,
                 trusted: RwLock::new(TrustedUsers::default()),
+                throttler,
             }
         }
 
@@ -239,9 +248,19 @@ mod state {
             response_target: R,
             message: M,
         ) {
-            let _ = self
-                .client()
-                .send_privmsg(response_target.as_ref(), format!("🛈 {}", message.as_ref()));
+            let target = response_target.as_ref();
+            let message = message.as_ref();
+
+            for (i, line) in message
+                .split_terminator(|c| c == '\r' || c == '\n')
+                .filter(|x| !x.is_empty())
+                .enumerate()
+            {
+                let prefix = if i == 0 { "\x02>\x0f" } else { "\x02:\x0f" };
+                let line = format!("{prefix}{line}");
+                self.throttler.acquire_one().await;
+                let _ = self.client().send_privmsg(target, line);
+            }
         }
     }
 }
