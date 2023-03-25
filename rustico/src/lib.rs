@@ -6,4 +6,4 @@ pub mod repl;
 mod runtime;
 mod service;
 
-pub use service::{Command, Service};
+pub use service::{Command, Error, Service};

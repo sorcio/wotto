@@ -1,5 +1,7 @@
 // Command parser
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
@@ -8,12 +10,26 @@ use tokio::sync::mpsc;
 use crate::service::{Command, Result as RusticoResult, Service};
 
 pub async fn repl() -> Result<()> {
-    let svc = Service::new();
+    let svc = Arc::new(Service::new());
 
     let (req_tx, req_rx) = mpsc::channel(1);
     let (resp_tx, resp_rx) = mpsc::channel(1);
-    tokio::spawn(async move {
-        svc.listen(req_rx, resp_tx).await;
+    tokio::spawn({
+        let svc = svc.clone();
+        async move {
+            svc.listen(req_rx, resp_tx).await;
+        }
+    });
+
+    std::thread::spawn({
+        let rustico = Arc::downgrade(&svc);
+        move || {
+            while let Some(rustico) = rustico.upgrade() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                rustico.increment_epoch();
+            }
+            eprintln!("epoch increment stopping");
+        }
     });
 
     // Tokio recommends to use normal blocking I/O for interactive stdin/out.

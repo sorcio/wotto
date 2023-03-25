@@ -24,6 +24,8 @@ pub enum Error {
     MemoryNotExported,
     #[error("invalid pointer")]
     InvalidPointer,
+    #[error("execution timed out")]
+    TimedOut,
 }
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
@@ -47,9 +49,19 @@ pub struct Service {
     linker: Linker<RuntimeData>,
 }
 
+fn make_engine() -> Engine {
+    let mut config = Config::new();
+    config
+        .async_support(true)
+        .epoch_interruption(true)
+        .cranelift_opt_level(OptLevel::Speed);
+
+    Engine::new(&config).unwrap()
+}
+
 impl Service {
     pub fn new() -> Self {
-        let engine = Engine::default();
+        let engine = make_engine();
         let mut linker = Linker::new(&engine);
         rt::add_to_linker(&mut linker, true)
             .map_err(Error::Wasm)
@@ -62,6 +74,10 @@ impl Service {
         }
     }
 
+    pub fn increment_epoch(&self) {
+        self.engine.increment_epoch();
+    }
+
     pub async fn listen(&self, mut rx: mpsc::Receiver<Command>, tx: mpsc::Sender<Result<String>>) {
         // used for manual testing, maybe deprecate?
         while let Some(cmd) = rx.recv().await {
@@ -71,7 +87,7 @@ impl Service {
                     module,
                     entry_point,
                     args,
-                } => self.run_module(module, entry_point, args).await,
+                } => self.run_module(&module, &entry_point, &args).await,
                 Command::Idle => {
                     continue;
                 }
@@ -110,32 +126,46 @@ impl Service {
 
     pub async fn run_module(
         &self,
-        module_name: String,
-        entry_point: String,
-        args: String,
+        module_name: &str,
+        entry_point: &str,
+        args: &str,
     ) -> Result<String> {
-        let modules = self.modules.lock().await;
-        let module = modules.get(&module_name).ok_or(Error::ModuleNotFound)?;
-
-        let runtime_data = RuntimeData {
-            message: args,
-            output: String::with_capacity(512),
+        let module = {
+            let modules = self.modules.lock().await;
+            modules
+                .get(module_name)
+                .ok_or(Error::ModuleNotFound)?
+                .clone()
         };
+
+        let runtime_data = RuntimeData::new(args.to_string(), 512);
         let mut store = Store::new(&self.engine, runtime_data);
+        store.epoch_deadline_async_yield_and_update(1);
 
         let instance = self
             .linker
-            .instantiate(&mut store, module)
+            .instantiate_async(&mut store, &module)
+            .await
             .map_err(Error::Wasm)?;
 
         let func = instance
-            .get_func(&mut store, &entry_point)
+            .get_func(&mut store, entry_point)
             .ok_or(Error::FunctionNotFound)?;
         let tyfunc = func
             .typed::<(), ()>(&mut store)
             .map_err(|_| Error::WrongFunctionType)?;
 
-        tyfunc.call(&mut store, ()).map_err(Error::Wasm)?;
+        let duration = std::time::Duration::from_millis(5000);
+        let fut = tyfunc.call_async(&mut store, ());
+        match tokio::time::timeout(duration, fut).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                return Err(Error::Wasm(err));
+            }
+            Err(_) => {
+                return Err(Error::TimedOut);
+            }
+        }
 
         Ok(store.into_data().output)
     }
@@ -150,6 +180,18 @@ impl Default for Service {
 struct RuntimeData {
     message: String,
     output: String,
+    capacity: usize,
+}
+
+impl RuntimeData {
+    fn new(message: String, output_capacity: usize) -> Self {
+        let output = String::with_capacity(output_capacity);
+        Self {
+            message,
+            output,
+            capacity: output_capacity,
+        }
+    }
 }
 
 pub(crate) trait HasInput {
@@ -168,7 +210,8 @@ impl HasInput for RuntimeData {
 
 impl HasOutput for RuntimeData {
     fn output(&mut self, text: &str) {
-        self.output += text;
+        let Some(available) = self.capacity.checked_sub(self.output.len()) else { return; };
+        self.output += &text[..available.min(text.len())];
     }
 }
 

@@ -29,7 +29,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         async { web_server(state).await }
     });
 
+    let epoch_timer = std::thread::spawn({
+        let state = Arc::downgrade(&state);
+        move || {
+            while let Some(state) = state.upgrade() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                state.rustico().increment_epoch();
+            }
+            eprintln!("epoch increment stopping");
+        }
+    });
+
     let _ = tokio::join!(web_task, irc_task);
+
+    let _ = epoch_timer.join();
 
     Ok(())
 }
@@ -151,11 +164,11 @@ mod state {
             slf: Arc<Self>,
             source: Option<Prefix>,
             response_target: String,
-            cmd: BotCommand,
+            cmd: &BotCommand,
         ) {
             match cmd.command() {
                 CommandName::Plain(x) if x == "ping" => {
-                    let _ = slf.client.send_notice(response_target, "pong");
+                    slf.reply(response_target, "pong").await;
                 }
                 CommandName::Plain(x) if x == "join" => {
                     if !check_trust(&slf, source).await {
@@ -175,7 +188,7 @@ mod state {
                         } else {
                             format!("I already trust {}", mask.nick)
                         };
-                        let _ = slf.client.send_notice(response_target, message);
+                        slf.reply(response_target, message).await;
                     } else {
                         eprintln!("invalid prefix: {:?}", cmd.args());
                     }
@@ -212,13 +225,23 @@ mod state {
                                 "cannot load module (check logs)".to_string()
                             }
                         };
-                        let _ = state.client().send_notice(response_target, response);
+                        state.reply(response_target, response).await;
                     });
                 }
                 _ => {
                     eprintln!("not a valid management command: {cmd:?}");
                 }
             }
+        }
+
+        pub(crate) async fn reply<R: AsRef<str>, M: AsRef<str>>(
+            &self,
+            response_target: R,
+            message: M,
+        ) {
+            let _ = self
+                .client()
+                .send_privmsg(response_target.as_ref(), format!("🛈 {}", message.as_ref()));
         }
     }
 }
@@ -252,7 +275,7 @@ async fn irc_stream_handler(
                         state.clone(),
                         move |response| async move {
                             if let Some(state) = w.upgrade() {
-                                let _ = state.client().send_notice(response_target, response);
+                                state.reply(response_target, response).await;
                             }
                         },
                     );
@@ -275,25 +298,37 @@ fn handle_command<F, Fut>(
     F: FnOnce(String) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send,
 {
-    let args = cmd.args.to_string();
-    let (module_name, entry_point) = match cmd.command {
+    let args = cmd.args().to_string();
+    let (module_name, entry_point) = match cmd.command() {
         CommandName::Plain(_) => {
             tokio::spawn(async move {
-                BotState::management_command(state, source, response_target, cmd).await;
+                BotState::management_command(state, source, response_target, &cmd).await;
             });
             return;
         }
-        CommandName::Namespaced(ns, name) => (ns, name),
+        CommandName::Namespaced(ns, name) => (ns.to_string(), name.to_string()),
     };
     tokio::spawn(async move {
         match state
             .rustico()
-            .run_module(module_name, entry_point, args)
+            .run_module(&module_name, &entry_point, &args)
             .await
         {
             Ok(s) => handler(s).await,
+            Err(rustico::Error::TimedOut) => {
+                // TODO irc code shouldn't be mixed here I think
+                state
+                    .reply(
+                        response_target,
+                        format!(
+                            "{} is taking too long to execute and has been interrupted.",
+                            cmd.command()
+                        ),
+                    )
+                    .await;
+            }
             Err(err) => {
-                eprintln!("error on command: {err}")
+                eprintln!("error on command: {err}");
             }
         }
     });
@@ -305,6 +340,15 @@ struct ParseError;
 enum CommandName {
     Plain(String),
     Namespaced(String, String),
+}
+
+impl std::fmt::Display for CommandName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CommandName::Plain(x) => f.write_str(x),
+            CommandName::Namespaced(ns, x) => write!(f, "{ns}.{x}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
