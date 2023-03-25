@@ -140,6 +140,7 @@ impl Service {
 
         let runtime_data = RuntimeData::new(args.to_string(), 512);
         let mut store = Store::new(&self.engine, runtime_data);
+        store.limiter(|state| &mut state.limits);
         store.epoch_deadline_async_yield_and_update(1);
 
         let instance = self
@@ -181,15 +182,21 @@ struct RuntimeData {
     message: String,
     output: String,
     capacity: usize,
+    limits: StoreLimits,
 }
 
 impl RuntimeData {
     fn new(message: String, output_capacity: usize) -> Self {
         let output = String::with_capacity(output_capacity);
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(1 << 19)
+            .table_elements(10 << 10)
+            .build();
         Self {
             message,
             output,
             capacity: output_capacity,
+            limits,
         }
     }
 }
