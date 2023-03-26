@@ -52,7 +52,6 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
     for handle in join_handles {
         let _ = handle.join();
     }
-    // let _ = epoch_timer.join();
 
     eprintln!("all done, bye!");
 
