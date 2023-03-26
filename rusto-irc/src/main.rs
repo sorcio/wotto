@@ -1,3 +1,5 @@
+#![feature(round_char_boundary)]
+
 mod parsing;
 mod throttling;
 
@@ -85,7 +87,7 @@ mod state {
 
     use irc::client::Client;
     use irc::proto::Prefix;
-    use tokio::sync::RwLock;
+    use tokio::sync::{AcquireError, RwLock, Semaphore};
 
     use crate::throttling::Throttler;
     use crate::{BotCommand, CommandName, UserMask};
@@ -144,6 +146,7 @@ mod state {
         rustico: rustico::Service,
         trusted: RwLock<TrustedUsers>,
         throttler: Throttler,
+        engine_semaphore: Semaphore,
     }
 
     impl BotState {
@@ -153,11 +156,13 @@ mod state {
                 .layer(2, 150)
                 .layer(1, 50)
                 .build();
+            let engine_semaphore = Semaphore::new(2);
             Self {
                 client,
                 rustico,
                 trusted: RwLock::new(TrustedUsers::default()),
                 throttler,
+                engine_semaphore,
             }
         }
 
@@ -237,6 +242,23 @@ mod state {
                         state.reply(response_target, response).await;
                     });
                 }
+                CommandName::Plain(x) if x == "permits" => {
+                    if !check_trust(&slf, source).await {
+                        return;
+                    }
+                    let available_permits = slf.engine_semaphore.available_permits();
+                    slf.reply(
+                        response_target,
+                        format!("available permits: {available_permits}"),
+                    )
+                    .await;
+                }
+                CommandName::Plain(x) if x == "quit" => {
+                    if !check_trust(&slf, source).await {
+                        return;
+                    }
+                    let _ = slf.client.send_quit("requested");
+                }
                 _ => {
                     eprintln!("not a valid management command: {cmd:?}");
                 }
@@ -248,6 +270,7 @@ mod state {
             response_target: R,
             message: M,
         ) {
+            const MAX_SIZE: usize = 512;
             let target = response_target.as_ref();
             let message = message.as_ref();
 
@@ -258,9 +281,16 @@ mod state {
             {
                 let prefix = if i == 0 { "\x02>\x0f" } else { "\x02:\x0f" };
                 let line = format!("{prefix}{line}");
+                let overhead = target.bytes().len() + b"PRIVMSG   :\r\n".len();
+                let max_payload_size = MAX_SIZE.saturating_sub(overhead);
+                let boundary = line.floor_char_boundary(max_payload_size);
                 self.throttler.acquire_one().await;
-                let _ = self.client().send_privmsg(target, line);
+                let _ = self.client().send_privmsg(target, &line[..boundary]);
             }
+        }
+
+        pub(crate) async fn engine_permit(&self) -> Result<impl Drop + '_, AcquireError> {
+            self.engine_semaphore.acquire().await
         }
     }
 }
@@ -328,6 +358,7 @@ fn handle_command<F, Fut>(
         CommandName::Namespaced(ns, name) => (ns.to_string(), name.to_string()),
     };
     tokio::spawn(async move {
+        let Ok(permit) = state.engine_permit().await else { return; };
         match state
             .rustico()
             .run_module(&module_name, &entry_point, &args)
@@ -350,6 +381,9 @@ fn handle_command<F, Fut>(
                 eprintln!("error on command: {err}");
             }
         }
+        // being super-explicit that engine permit is released only after the
+        // whole response has been sent out:
+        drop(permit);
     });
 }
 
