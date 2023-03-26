@@ -6,7 +6,7 @@ use nom::multi::{count, many0, many0_count, many1};
 use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, Tuple};
 use nom::{Finish, IResult};
 
-use crate::{BotCommand, CommandName};
+use crate::bot::{BotCommand, CommandName};
 
 fn identifier(input: &str) -> IResult<&str, &str> {
     recognize(pair(

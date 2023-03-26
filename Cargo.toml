@@ -3,6 +3,7 @@ members = [
     "rustico",
     "rusto-irc",
     "rustico-cli",
+    "rusto-utils",
 ]
 
 [profile.release]
@@ -11,3 +12,6 @@ opt-level = "s"
 strip = "debuginfo"
 codegen-units = 1
 overflow-checks = true
+
+[patch.crates-io]
+irc = { path = "irc" }
