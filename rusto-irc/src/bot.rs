@@ -32,8 +32,12 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
         });
         join_handles.push(epoch_timer);
 
+        let ctrl_c_task = tokio::spawn(ctrl_c_monitor(Arc::downgrade(&state)));
+
         let _ = state.clone().irc_task().await;
         eprintln!("irc_task quit");
+
+        ctrl_c_task.abort();
 
         // TODO close web task cleanly?
         eprintln!("shutting down web server...");
@@ -56,6 +60,14 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("all done, bye!");
 
     Ok(())
+}
+
+async fn ctrl_c_monitor(state: std::sync::Weak<BotState>) {
+    let Ok(_) = tokio::signal::ctrl_c().await else { return; };
+    if let Some(state) = state.upgrade() {
+        eprintln!("received Ctrl-C; requesting quit");
+        state.request_quit();
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,9 +299,7 @@ mod state {
                     if !check_trust(&slf, source).await {
                         return;
                     }
-                    slf.quitting
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    let _ = slf.client(|client| client.send_quit("requested"));
+                    slf.request_quit();
                 }
                 _ => {
                     eprintln!("not a valid management command: {cmd:?}");
@@ -340,6 +350,14 @@ mod state {
                 }
             }
             Ok(())
+        }
+
+        pub(crate) fn request_quit(&self) {
+            let already_quitting = self.quitting
+                .swap(true, std::sync::atomic::Ordering::SeqCst);
+            if !already_quitting {
+                let _ = self.client(|client| client.send_quit("requested"));
+            }
         }
     }
 }
