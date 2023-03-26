@@ -24,15 +24,10 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
 
         let epoch_timer = std::thread::spawn({
             let state = Arc::downgrade(&state);
-            move || {
-                loop {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                    if let Some(state) = state.upgrade() {
-                        state.rustico().increment_epoch();
-                    } else {
-                        break;
-                    }
-                }
+            move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let Some(state) = state.upgrade() else { break; };
+                state.rustico().increment_epoch();
             }
         });
         join_handles.push(epoch_timer);
@@ -55,7 +50,7 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("shutting down epoch timer...");
     for handle in join_handles {
-        let _ =handle.join();
+        let _ = handle.join();
     }
     // let _ = epoch_timer.join();
 
@@ -105,8 +100,8 @@ mod state {
     use irc::proto::Prefix;
     use tokio::sync::{AcquireError, RwLock, Semaphore};
 
-    use crate::throttling::Throttler;
     use super::{BotCommand, CommandName, UserMask};
+    use crate::throttling::Throttler;
 
     struct TrustedUsers {
         list: Vec<UserMask>,
@@ -201,10 +196,7 @@ mod state {
             F: FnOnce(&Client) -> T,
         {
             match self.client.try_read() {
-                Ok(guard) => match guard.as_ref() {
-                    Some(client) => Some(f(client)),
-                    None => None,
-                },
+                Ok(guard) => guard.as_ref().map(f),
                 Err(_) => None,
             }
         }
@@ -342,7 +334,7 @@ mod state {
                 let stream = client.stream()?;
                 *self.client.write().await = Some(client);
                 match super::irc_stream_handler(stream, self.clone()).await {
-                    Ok(_) => { }
+                    Ok(_) => {}
                     Err(error) => {
                         eprintln!("irc stream loop terminated with error: {error}");
                     }

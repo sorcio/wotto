@@ -36,23 +36,22 @@ struct DebugArcInner<T> {
     data: T,
 }
 
-
 /// Inspect an owned `Arc<T>` and return a string with the current count
 /// of strong and weak references.
-/// 
+///
 /// # Examples
 ///
 /// Inspecting an Arc:
-/// 
+///
 /// ```
 /// # use std::sync::Arc;
 /// use rusto_utils::debug::debug_arc;
 /// let r = Arc::new(100);
 /// assert_eq!(debug_arc(&r), "Arc(strong=1, weak=1)");
 /// ```
-/// 
+///
 /// Inspecting an Arc with multiple references:
-/// 
+///
 /// ```
 /// # use std::sync::Arc;
 /// use rusto_utils::debug::debug_arc;
