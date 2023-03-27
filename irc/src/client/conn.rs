@@ -111,7 +111,9 @@ impl Connection {
 
     #[cfg(not(feature = "proxy"))]
     async fn new_stream(config: &Config) -> error::Result<TcpStream> {
-        Ok(TcpStream::connect((config.server()?, config.port())).await?)
+        let stream = TcpStream::connect((config.server()?, config.port())).await?;
+        stream.set_nodelay(true)?;
+        Ok(stream)
     }
 
     #[cfg(feature = "proxy")]
