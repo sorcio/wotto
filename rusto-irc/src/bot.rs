@@ -103,6 +103,7 @@ impl std::str::FromStr for UserMask {
 }
 
 mod state {
+    use std::fmt::Debug;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
@@ -307,7 +308,8 @@ mod state {
             }
         }
 
-        pub(crate) async fn reply<R: AsRef<str>, M: AsRef<str>>(
+        #[tracing::instrument]
+        pub(crate) async fn reply<R: AsRef<str> + Debug, M: AsRef<str> + Debug>(
             &self,
             response_target: R,
             message: M,
@@ -359,6 +361,12 @@ mod state {
                 let _ = self.client(|client| client.send_quit("requested"));
             }
         }
+    }
+
+    impl core::fmt::Debug for BotState {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("BotState").field("quitting", &self.quitting).finish()
+    }
     }
 }
 
@@ -424,7 +432,9 @@ fn handle_command<F, Fut>(
         }
         CommandName::Namespaced(ns, name) => (ns.to_string(), name.to_string()),
     };
-    tokio::spawn(async move {
+    let task_name = format!("command::{module_name}::{entry_point}");
+    let run_task = tokio::task::Builder::new().name(&task_name);
+    run_task.spawn(async move {
         let Ok(permit) = state.engine_permit().await else { return; };
         match state
             .rustico()
@@ -451,7 +461,7 @@ fn handle_command<F, Fut>(
         // being super-explicit that engine permit is released only after the
         // whole response has been sent out:
         drop(permit);
-    });
+    }).unwrap();
 }
 
 struct ParseError;
