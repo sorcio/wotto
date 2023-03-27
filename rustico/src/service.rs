@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -7,6 +8,7 @@ use tokio::sync::{mpsc, Mutex};
 use wasmtime::*;
 
 use crate::runtime as rt;
+use crate::webload::{load_module_from_url, Domain, InvalidUrl, WebError, WebModule};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -26,6 +28,10 @@ pub enum Error {
     InvalidPointer,
     #[error("execution timed out")]
     TimedOut,
+    #[error("invalid url ({0}")]
+    InvalidUrl(#[from] InvalidUrl),
+    #[error("error while fetching url ({0})")]
+    CannotFetch(#[from] WebError),
 }
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
@@ -47,6 +53,7 @@ pub struct Service {
     engine: Engine,
     modules: Arc<Mutex<HashMap<String, Module>>>,
     linker: Linker<RuntimeData>,
+    web_modules: Arc<Mutex<HashMap<String, WebModule>>>,
 }
 
 fn make_engine() -> Engine {
@@ -71,6 +78,7 @@ impl Service {
             engine,
             modules: Arc::new(HashMap::new().into()),
             linker,
+            web_modules: Arc::new(HashMap::new().into()),
         }
     }
 
@@ -101,27 +109,46 @@ impl Service {
         }
     }
 
+    async fn add_module(&self, namespace: Option<String>, name: String, module: Module) -> String {
+        let fqn = if let Some(namespace) = namespace {
+            format!("{namespace}/{name}")
+        } else {
+            name
+        };
+        let mut modules = self.modules.lock().await;
+        modules.insert(fqn.clone(), module);
+        fqn
+    }
+
     pub async fn load_module(&self, name: String) -> Result<String> {
         // quick and dirty name validation + path loading
-        use std::path::{Path, PathBuf};
         const MODULES_PATH: &str = "examples";
         let name_as_path = PathBuf::from_str(&name).map_err(|_| Error::InvalidModuleName)?;
         let file_name = name_as_path.file_name().ok_or(Error::InvalidModuleName)?;
         let path = Path::new(MODULES_PATH).join(file_name);
-        let canonical_name = path
-            .with_extension("")
-            .file_name()
-            .unwrap()
-            .to_str()
-            .ok_or(Error::InvalidModuleName)?
-            .to_string();
-
+        let canonical_name = canonicalize_name(&path)?;
         let module = Module::from_file(&self.engine, &path).map_err(Error::Wasm)?;
+        let fqn = self.add_module(None, canonical_name, module).await;
 
-        let mut modules = self.modules.lock().await;
-        modules.insert(canonical_name.clone(), module);
+        Ok(fqn)
+    }
 
-        Ok(canonical_name)
+    pub async fn load_module_web(&self, url: &str) -> Result<String> {
+        let url: url::Url = url.parse().map_err(|_| InvalidUrl::ParseError)?;
+        let webmodule = load_module_from_url(url).await?;
+        let canonical_name = canonicalize_name(webmodule.name())?;
+        let user = webmodule.user();
+        let namespace = match webmodule.domain() {
+            Domain::Github => user.to_string(),
+            Domain::Other(domain) => format!("{user}@{domain}"),
+        };
+
+        let module = Module::new(&self.engine, webmodule.content()).map_err(Error::Wasm)?;
+        let fqn = self
+            .add_module(Some(namespace), canonical_name, module)
+            .await;
+
+        Ok(fqn)
     }
 
     pub async fn run_module(
@@ -229,4 +256,15 @@ pub(crate) fn get_memory<T>(caller: &mut Caller<'_, T>) -> Result<Memory> {
         .into_memory()
         .ok_or(Error::MemoryNotExported)?;
     Ok(mem)
+}
+
+fn canonicalize_name<P: AsRef<Path>>(path: P) -> Result<String> {
+    Ok(path
+        .as_ref()
+        .with_extension("")
+        .file_name()
+        .unwrap()
+        .to_str()
+        .ok_or(Error::InvalidModuleName)?
+        .to_string())
 }

@@ -15,10 +15,19 @@ fn identifier(input: &str) -> IResult<&str, &str> {
     ))(input)
 }
 
+fn namespace(input: &str) -> IResult<&str, &str> {
+    alt((
+        // either `user/foo`
+        recognize(separated_pair(identifier, tag("/"), identifier)),
+        // or just `foo`
+        identifier,
+    ))(input)
+}
+
 fn command_name(input: &str) -> IResult<&str, CommandName> {
     alt((
         map(
-            separated_pair(identifier, tag("."), identifier),
+            separated_pair(namespace, tag("."), identifier),
             |(ns, x)| CommandName::Namespaced(ns.to_string(), x.to_string()),
         ),
         map(identifier, |x| CommandName::Plain(x.to_string())),

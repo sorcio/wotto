@@ -275,7 +275,12 @@ mod state {
                     let module_name = cmd.args.trim().to_string();
                     let state = slf.clone();
                     tokio::spawn(async move {
-                        let response = match state.rustico().load_module(module_name).await {
+                        let load_result = if module_name.trim().starts_with("https://") {
+                            state.rustico().load_module_web(&module_name).await
+                        } else {
+                            state.rustico().load_module(module_name).await
+                        };
+                        let response = match load_result {
                             Ok(name) => format!("loaded module: {name}"),
                             Err(error) => {
                                 eprintln!("management load failed: {error}");
@@ -355,7 +360,8 @@ mod state {
         }
 
         pub(crate) fn request_quit(&self) {
-            let already_quitting = self.quitting
+            let already_quitting = self
+                .quitting
                 .swap(true, std::sync::atomic::Ordering::SeqCst);
             if !already_quitting {
                 let _ = self.client(|client| client.send_quit("requested"));
@@ -365,8 +371,10 @@ mod state {
 
     impl core::fmt::Debug for BotState {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("BotState").field("quitting", &self.quitting).finish()
-    }
+            f.debug_struct("BotState")
+                .field("quitting", &self.quitting)
+                .finish()
+        }
     }
 }
 
@@ -434,34 +442,36 @@ fn handle_command<F, Fut>(
     };
     let task_name = format!("command::{module_name}::{entry_point}");
     let run_task = tokio::task::Builder::new().name(&task_name);
-    run_task.spawn(async move {
-        let Ok(permit) = state.engine_permit().await else { return; };
-        match state
-            .rustico()
-            .run_module(&module_name, &entry_point, &args)
-            .await
-        {
-            Ok(s) => handler(s).await,
-            Err(rustico::Error::TimedOut) => {
-                // TODO irc code shouldn't be mixed here I think
-                state
-                    .reply(
-                        response_target,
-                        format!(
-                            "{} is taking too long to execute and has been interrupted.",
-                            cmd.command()
-                        ),
-                    )
-                    .await;
+    run_task
+        .spawn(async move {
+            let Ok(permit) = state.engine_permit().await else { return; };
+            match state
+                .rustico()
+                .run_module(&module_name, &entry_point, &args)
+                .await
+            {
+                Ok(s) => handler(s).await,
+                Err(rustico::Error::TimedOut) => {
+                    // TODO irc code shouldn't be mixed here I think
+                    state
+                        .reply(
+                            response_target,
+                            format!(
+                                "{} is taking too long to execute and has been interrupted.",
+                                cmd.command()
+                            ),
+                        )
+                        .await;
+                }
+                Err(err) => {
+                    eprintln!("error on command: {err}");
+                }
             }
-            Err(err) => {
-                eprintln!("error on command: {err}");
-            }
-        }
-        // being super-explicit that engine permit is released only after the
-        // whole response has been sent out:
-        drop(permit);
-    }).unwrap();
+            // being super-explicit that engine permit is released only after the
+            // whole response has been sent out:
+            drop(permit);
+        })
+        .unwrap();
 }
 
 struct ParseError;

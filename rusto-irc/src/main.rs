@@ -25,7 +25,7 @@ fn setup_tracing() -> Result<(), Box<dyn std::error::Error>> {
 
     // these could become features
     let enable_jaeger = true;
-    let enable_fmt = true;
+    let enable_fmt = false;
     let enable_tokio_console = true;
 
     let jaeger_layer = if enable_jaeger {
@@ -56,5 +56,6 @@ fn setup_tracing() -> Result<(), Box<dyn std::error::Error>> {
         .with(jaeger_layer)
         .with(fmt_layer)
         .with(console_layer)
-        .try_init().map_err(|err| err.into())
+        .try_init()
+        .map_err(|err| err.into())
 }

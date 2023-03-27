@@ -5,5 +5,6 @@ mod assemblyscript;
 pub mod repl;
 mod runtime;
 mod service;
+mod webload;
 
 pub use service::{Command, Error, Service};
