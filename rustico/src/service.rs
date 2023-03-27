@@ -189,7 +189,7 @@ impl RuntimeData {
     fn new(message: String, output_capacity: usize) -> Self {
         let output = String::with_capacity(output_capacity);
         let limits = StoreLimitsBuilder::new()
-            .memory_size(1 << 19)
+            .memory_size(1 << 20)
             .table_elements(10 << 10)
             .build();
         Self {
