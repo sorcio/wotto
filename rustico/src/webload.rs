@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use lazy_static::lazy_static;
 use thiserror::Error;
 use tracing::info;
@@ -21,6 +22,12 @@ pub enum InvalidUrl {
 pub enum WebError {
     #[error("temporary failure: {0}")]
     TemporaryFailure(#[source] reqwest::Error),
+    #[error("web client error: {0}")]
+    ReqwestError(#[source] reqwest::Error),
+    #[error("not a webassembly module")]
+    NotWasm,
+    #[error("file too large")]
+    TooLarge,
 }
 
 lazy_static! {
@@ -31,20 +38,264 @@ lazy_static! {
         .origin();
 }
 
+fn is_hex_string(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Parsed Gist url
+struct Gist<'a> {
+    user: &'a str,
+    gist_id: &'a str,
+    commit: Option<&'a str>,
+    file_path: Option<&'a str>,
+    fragment: Option<&'a str>,
+}
+
+impl<'a> Gist<'a> {
+    fn new(url: &'a Url) -> Result<Self> {
+        Self::parse(url)
+    }
+
+    fn parse(url: &'a Url) -> Result<Self> {
+        let segments: Vec<_> = url.path().trim_matches('/').splitn(5, '/').collect();
+
+        match &segments[..] {
+            // raw gist url:
+            // /<user>/<gist_id>/raw/<commit>/<filepath>
+            &[user, gist_id, "raw", commit, file_path] => {
+                if !is_hex_string(gist_id) || !is_hex_string(commit) || file_path.is_empty() {
+                    Err(InvalidUrl::InvalidPath.into())
+                } else {
+                    Ok(Self {
+                        user,
+                        gist_id,
+                        commit: Some(commit),
+                        file_path: Some(file_path),
+                        fragment: None,
+                    })
+                }
+            }
+
+            // gist.github.com url:
+            // /<user>/<gist_id>
+            // /<user>/<gist_id>#file-<filename-with-dashes>
+            &[user, gist_id] => {
+                if !is_hex_string(gist_id) {
+                    Err(InvalidUrl::InvalidPath.into())
+                } else {
+                    Ok(Self {
+                        user,
+                        gist_id,
+                        commit: None,
+                        file_path: None,
+                        fragment: url.fragment(),
+                    })
+                }
+            }
+
+            _ => Err(InvalidUrl::InvalidPath.into()),
+        }
+    }
+
+    fn build_api_url(&self) -> String {
+        // see https://docs.github.com/en/rest/gists/gists?apiVersion=2022-11-28#get-a-gist
+        if let Some(commit) = self.commit() {
+            format!("https://api.github.com/gists/{}/{commit}", self.gist_id())
+        } else {
+            format!("https://api.github.com/gists/{}", self.gist_id())
+        }
+    }
+
+    fn user(&self) -> &'a str {
+        self.user
+    }
+
+    fn gist_id(&self) -> &'a str {
+        self.gist_id
+    }
+
+    fn commit(&self) -> Option<&'a str> {
+        self.commit
+    }
+
+    fn file_path(&self) -> Option<&'a str> {
+        self.file_path
+    }
+
+    fn file_name_hint(&self) -> Option<GistFileNameHint<'a>> {
+        self.fragment?.strip_prefix("file-").map(GistFileNameHint)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GistFileNameHint<'a>(&'a str);
+
+impl GistFileNameHint<'_> {
+    fn matches(self, other: &str) -> bool {
+        if self.0.len() == other.len() {
+            self.0.chars().zip(other.chars()).all(|(h, c)| {
+                match (h.to_ascii_lowercase(), c.to_ascii_lowercase()) {
+                    ('-', '.') => true,
+                    (h, c) => h == c,
+                }
+            })
+        } else {
+            false
+        }
+    }
+}
+
+fn guess_gist_file_name<'a>(
+    files: &'a serde_json::Map<String, serde_json::Value>,
+    gist: &Gist,
+) -> Option<(String, &'a serde_json::Map<String, serde_json::Value>)> {
+    if files.len() == 1 {
+        // only one file in the gist (common case)
+        return files
+            .iter()
+            .next()
+            .map(|(k, v)| Some((k.to_string(), v.as_object()?)))?;
+    }
+    if let Some(hint) = gist.file_name_hint() {
+        // there are multiple files but we have a hint from the fragment
+        // if it's a unique match, we use the hint. otherwise we go on
+        if let Ok((k, v)) = files.iter().filter(|(k, _)| hint.matches(&k)).exactly_one() {
+            return Some((k.to_string(), v.as_object()?));
+        }
+    }
+    // there are multiple files and the hint didn't match a specific one. so we
+    // check if there is a unique file with a .wasm extension, or a unique one
+    // with a .wat extension, or a unique one with language = "WebAssembly".
+    if let Ok((k, v)) = files
+        .iter()
+        .filter(|(k, _)| k.ends_with(".wasm"))
+        .exactly_one()
+    {
+        return Some((k.to_string(), v.as_object()?));
+    }
+    if let Ok((k, v)) = files
+        .iter()
+        .filter(|(k, _)| k.ends_with(".wat"))
+        .exactly_one()
+    {
+        return Some((k.to_string(), v.as_object()?));
+    }
+    if let Ok((k, v)) = files
+        .iter()
+        .filter(|(_, v)| {
+            v.as_object()
+                .and_then(|o| o.get("language"))
+                .and_then(|l| l.as_str())
+                .map(|s| s == "WebAssembly")
+                .unwrap_or(false)
+        })
+        .exactly_one()
+    {
+        return Some((k.to_string(), v.as_object()?));
+    }
+    None
+}
+
+enum GistGuessResult {
+    Found(WebModule),
+    MustFetch {
+        user: String,
+        name: String,
+        raw_url: String,
+    },
+    NotFound,
+}
+
+impl From<Option<GistGuessResult>> for GistGuessResult {
+    fn from(value: Option<GistGuessResult>) -> Self {
+        match value {
+            Some(g) => g,
+            None => Self::NotFound,
+        }
+    }
+}
+
+fn extract_gist_from_json(json: serde_json::Value, gist: Gist) -> Option<GistGuessResult> {
+    let files = json.as_object()?.get("files")?.as_object()?;
+    let (name, file) = if let Some(file_name) = gist.file_path() {
+        // if a file name is specified, it must be valid
+        (file_name.to_string(), files.get(file_name)?.as_object()?)
+    } else {
+        // must guess the file name
+        guess_gist_file_name(files, &gist)?
+    };
+
+    let user = gist.user().to_string();
+    let content = if file.get("truncated")?.as_bool()? {
+        // TODO fetch raw file instead
+        let raw_url = file.get("raw_url")?.as_str()?.to_string();
+        return Some(GistGuessResult::MustFetch {
+            user,
+            name,
+            raw_url,
+        });
+    } else {
+        file.get("content")?.as_str()?
+    };
+
+    Some(GistGuessResult::Found(WebModule::new(
+        Domain::Github,
+        user,
+        name,
+        content,
+    )))
+}
 async fn load_gist_from_url(url: &Url) -> Result<WebModule> {
     debug_assert_eq!(url.scheme(), "https");
     debug_assert_eq!(url.host(), Some(url::Host::Domain("gist.github.com")));
 
-    let _segments: Vec<_> = url
-        .path_segments()
-        .ok_or(InvalidUrl::InvalidPath)?
-        .collect();
+    let gist = Gist::new(url)?;
+    let api_url = gist.build_api_url();
+    let client = reqwest::Client::new();
+    let request = client
+        .request(reqwest::Method::GET, api_url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        // .bearer_auth(token)  // TODO
+        .build()
+        .map_err(WebError::ReqwestError)?;
+    let response = client
+        .execute(request)
+        .await
+        .map_err(WebError::TemporaryFailure)?
+        .error_for_status()
+        .map_err(WebError::TemporaryFailure)?;
 
-    // https://gist.github.com/sorcio/477bb75059341c4dfaef1b0c0849677f
-    // /<user>/<gist_id>
+    let json = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(WebError::ReqwestError)?;
 
-    // TODO: call API to fetch content and filename
-    Err(InvalidUrl::RejectedOrigin.into())
+    match extract_gist_from_json(json, gist).into() {
+        GistGuessResult::Found(wm) => Ok(wm),
+        GistGuessResult::MustFetch {
+            user,
+            name,
+            raw_url,
+        } => {
+            let raw_req = client
+                .request(reqwest::Method::GET, raw_url)
+                // .bearer_auth(token)  // TODO
+                .build()
+                .map_err(WebError::ReqwestError)?;
+            let content = client
+                .execute(raw_req)
+                .await
+                .map_err(WebError::TemporaryFailure)?
+                .error_for_status()
+                .map_err(WebError::TemporaryFailure)?
+                .bytes()
+                .await
+                .map_err(WebError::TemporaryFailure)?;
+            Ok(WebModule::new(Domain::Github, user, name, content))
+        }
+        GistGuessResult::NotFound => Err(WebError::NotWasm.into()),
+    }
 }
 
 async fn load_gist_from_raw_url(url: &Url) -> Result<WebModule> {
