@@ -40,7 +40,6 @@ lazy_static! {
         .origin();
 }
 
-
 async fn find_loader(url: &Url) -> Result<WebModule> {
     let origin = url.origin();
     if origin == *GIST_ORIGIN || origin == *GIST_RAW_ORIGIN {

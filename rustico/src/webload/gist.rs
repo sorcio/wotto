@@ -235,10 +235,7 @@ impl From<Option<GistGuessResult>> for GistGuessResult {
     }
 }
 
-fn extract_gist_from_json(
-    json: serde_json::Value,
-    gist: Gist,
-) -> Option<GistGuessResult> {
+fn extract_gist_from_json(json: serde_json::Value, gist: Gist) -> Option<GistGuessResult> {
     let files = json.as_object()?.get("files")?.as_object()?;
     let (name, file) = if let Some(file_name) = gist.file_path() {
         // if a file name is specified, it must be valid
