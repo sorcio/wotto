@@ -1,7 +1,6 @@
-use itertools::Itertools;
 use lazy_static::lazy_static;
 use thiserror::Error;
-use tracing::info;
+use tracing::warn;
 use url::{Origin, Url};
 
 use crate::service::Result;
@@ -28,6 +27,8 @@ pub enum WebError {
     NotWasm,
     #[error("file too large")]
     TooLarge,
+    #[error("missing credentials")]
+    NoCredentials,
 }
 
 lazy_static! {
@@ -46,6 +47,7 @@ fn is_hex_string(s: &str) -> bool {
 struct Gist<'a> {
     user: &'a str,
     gist_id: &'a str,
+    blob: Option<&'a str>,
     commit: Option<&'a str>,
     file_path: Option<&'a str>,
     fragment: Option<&'a str>,
@@ -59,17 +61,18 @@ impl<'a> Gist<'a> {
     fn parse(url: &'a Url) -> Result<Self> {
         let segments: Vec<_> = url.path().trim_matches('/').splitn(5, '/').collect();
 
-        match &segments[..] {
+        match segments[..] {
             // raw gist url:
-            // /<user>/<gist_id>/raw/<commit>/<filepath>
-            &[user, gist_id, "raw", commit, file_path] => {
-                if !is_hex_string(gist_id) || !is_hex_string(commit) || file_path.is_empty() {
+            // /<user>/<gist_id>/raw/<blob>/<filepath>
+            [user, gist_id, "raw", blob, file_path] => {
+                if !is_hex_string(gist_id) || !is_hex_string(blob) || file_path.is_empty() {
                     Err(InvalidUrl::InvalidPath.into())
                 } else {
                     Ok(Self {
                         user,
                         gist_id,
-                        commit: Some(commit),
+                        blob: Some(blob),
+                        commit: None,
                         file_path: Some(file_path),
                         fragment: None,
                     })
@@ -79,14 +82,33 @@ impl<'a> Gist<'a> {
             // gist.github.com url:
             // /<user>/<gist_id>
             // /<user>/<gist_id>#file-<filename-with-dashes>
-            &[user, gist_id] => {
+            [user, gist_id] => {
                 if !is_hex_string(gist_id) {
                     Err(InvalidUrl::InvalidPath.into())
                 } else {
                     Ok(Self {
                         user,
                         gist_id,
+                        blob: None,
                         commit: None,
+                        file_path: None,
+                        fragment: url.fragment(),
+                    })
+                }
+            }
+
+            // gist.github.com url with revision:
+            // /<user>/<gist_id>/<commit>
+            // /<user>/<gist_id>/<commit>#file-<filename-with-dashes>
+            [user, gist_id, commit] => {
+                if !is_hex_string(gist_id) || !is_hex_string(commit) {
+                    Err(InvalidUrl::InvalidPath.into())
+                } else {
+                    Ok(Self {
+                        user,
+                        gist_id,
+                        blob: None,
+                        commit: Some(commit),
                         file_path: None,
                         fragment: url.fragment(),
                     })
@@ -106,12 +128,33 @@ impl<'a> Gist<'a> {
         }
     }
 
+    fn build_raw_url(&self) -> Option<String> {
+        if let Self {
+            user,
+            gist_id,
+            blob: Some(blob),
+            file_path: Some(file_path),
+            ..
+        } = self
+        {
+            Some(format!(
+                "https://gist.githubusercontent.com/{user}/{gist_id}/raw/{blob}/{file_path}"
+            ))
+        } else {
+            None
+        }
+    }
+
     fn user(&self) -> &'a str {
         self.user
     }
 
     fn gist_id(&self) -> &'a str {
         self.gist_id
+    }
+
+    fn blob(&self) -> Option<&'a str> {
+        self.blob
     }
 
     fn commit(&self) -> Option<&'a str> {
@@ -124,6 +167,17 @@ impl<'a> Gist<'a> {
 
     fn file_name_hint(&self) -> Option<GistFileNameHint<'a>> {
         self.fragment?.strip_prefix("file-").map(GistFileNameHint)
+    }
+
+    fn eq_with_blob(&self, url: &'_ Url) -> bool {
+        if let Ok(other) = Gist::parse(url) {
+            self.user() == other.user()
+                && self.gist_id() == other.gist_id()
+                && self.blob().is_some()
+                && self.blob() == other.blob()
+        } else {
+            false
+        }
     }
 }
 
@@ -149,6 +203,8 @@ fn guess_gist_file_name<'a>(
     files: &'a serde_json::Map<String, serde_json::Value>,
     gist: &Gist,
 ) -> Option<(String, &'a serde_json::Map<String, serde_json::Value>)> {
+    use itertools::Itertools;
+
     if files.len() == 1 {
         // only one file in the gist (common case)
         return files
@@ -159,7 +215,7 @@ fn guess_gist_file_name<'a>(
     if let Some(hint) = gist.file_name_hint() {
         // there are multiple files but we have a hint from the fragment
         // if it's a unique match, we use the hint. otherwise we go on
-        if let Ok((k, v)) = files.iter().filter(|(k, _)| hint.matches(&k)).exactly_one() {
+        if let Ok((k, v)) = files.iter().filter(|(k, _)| hint.matches(k)).exactly_one() {
             return Some((k.to_string(), v.as_object()?));
         }
     }
@@ -227,13 +283,23 @@ fn extract_gist_from_json(json: serde_json::Value, gist: Gist) -> Option<GistGue
 
     let user = gist.user().to_string();
     let content = if file.get("truncated")?.as_bool()? {
-        // TODO fetch raw file instead
         let raw_url = file.get("raw_url")?.as_str()?.to_string();
-        return Some(GistGuessResult::MustFetch {
-            user,
-            name,
-            raw_url,
-        });
+        if gist.eq_with_blob(&raw_url.parse().ok()?) {
+            return Some(GistGuessResult::MustFetch {
+                user,
+                name,
+                raw_url,
+            });
+        } else {
+            // TODO decide whether we want to validate the raw url (against
+            // the gist commit history or something)
+            warn!("partially supported case: raw gist with non-current revision");
+            return Some(GistGuessResult::MustFetch {
+                user,
+                name,
+                raw_url: gist.build_raw_url()?,
+            });
+        }
     } else {
         file.get("content")?.as_str()?
     };
@@ -245,18 +311,38 @@ fn extract_gist_from_json(json: serde_json::Value, gist: Gist) -> Option<GistGue
         content,
     )))
 }
+
+fn github_basic_auth() -> Result<(String, String)> {
+    let text = std::fs::read_to_string("github.token").map_err(|_| WebError::NoCredentials)?;
+    let lines: Vec<_> = text.split_ascii_whitespace().take(2).collect();
+    match lines[..] {
+        [username, password] => Ok((username.to_string(), password.to_string())),
+        _ => Err(WebError::NoCredentials.into()),
+    }
+}
+
 async fn load_gist_from_url(url: &Url) -> Result<WebModule> {
     debug_assert_eq!(url.scheme(), "https");
-    debug_assert_eq!(url.host(), Some(url::Host::Domain("gist.github.com")));
+    debug_assert!(matches!(
+        url.host(),
+        Some(url::Host::Domain(
+            "gist.github.com" | "gist.githubusercontent.com"
+        ))
+    ));
 
     let gist = Gist::new(url)?;
     let api_url = gist.build_api_url();
-    let client = reqwest::Client::new();
+    let client = reqwest::ClientBuilder::new()
+        .user_agent("https://github.com/sorcio/rusto")
+        .https_only(true)
+        .build()
+        .map_err(WebError::ReqwestError)?;
+    let (username, password) = github_basic_auth()?;
     let request = client
         .request(reqwest::Method::GET, api_url)
         .header("Accept", "application/vnd.github+json")
         .header("X-GitHub-Api-Version", "2022-11-28")
-        // .bearer_auth(token)  // TODO
+        .basic_auth(&username, Some(&password))
         .build()
         .map_err(WebError::ReqwestError)?;
     let response = client
@@ -280,7 +366,7 @@ async fn load_gist_from_url(url: &Url) -> Result<WebModule> {
         } => {
             let raw_req = client
                 .request(reqwest::Method::GET, raw_url)
-                // .bearer_auth(token)  // TODO
+                .basic_auth(&username, Some(&password))
                 .build()
                 .map_err(WebError::ReqwestError)?;
             let content = client
@@ -298,67 +384,10 @@ async fn load_gist_from_url(url: &Url) -> Result<WebModule> {
     }
 }
 
-async fn load_gist_from_raw_url(url: &Url) -> Result<WebModule> {
-    debug_assert_eq!(url.scheme(), "https");
-    debug_assert_eq!(
-        url.host(),
-        Some(url::Host::Domain("gist.githubusercontent.com"))
-    );
-
-    let segments: Vec<_> = url
-        .path_segments()
-        .ok_or(InvalidUrl::InvalidPath)?
-        .collect();
-
-    // /sorcio/477bb75059341c4dfaef1b0c0849677f/raw/dd1250c85e31ca7541a04f70ed8d77c586bc0377/math.wat
-    // /<user>/<gist_id>/raw/<commit>/<filepath>
-
-    if segments.len() != 5 || segments[2] != "raw" {
-        return Err(InvalidUrl::InvalidPath.into());
-    }
-
-    let user = segments[0];
-    let gist_id = segments[1];
-    let commit = segments[3];
-    let file_name = segments[4];
-
-    info!("load_gist_from_raw_url() url={url} user={user} gist_id={gist_id} commit={commit} file_name={file_name}");
-
-    // just to be extremely careful about sanitizing, we rebuild the url
-    let content_path = format!("{user}/{gist_id}/raw/{commit}/{file_name}");
-    let content_url = Url::parse(&GIST_RAW_ORIGIN.unicode_serialization())
-        .unwrap()
-        .join(&content_path)
-        .unwrap();
-
-    info!("load_gist_from_raw_url() content_url={content_url}");
-
-    let r = reqwest::get(content_url)
-        .await
-        .map_err(WebError::TemporaryFailure)?
-        .error_for_status()
-        .map_err(WebError::TemporaryFailure)?;
-
-    let content = r.bytes().await.map_err(WebError::TemporaryFailure)?;
-
-    Ok(WebModule::new(
-        Domain::Github,
-        user.to_string(),
-        file_name.to_string(),
-        content,
-    ))
-}
-
 async fn find_loader(url: &Url) -> Result<WebModule> {
     let origin = url.origin();
-    // WEB_LOADERS
-    //     .get(&origin)
-    //     .ok_or(InvalidUrl::RejectedOrigin.into())
-    //     .copied()
-    if origin == *GIST_ORIGIN {
+    if origin == *GIST_ORIGIN || origin == *GIST_RAW_ORIGIN {
         load_gist_from_url(url).await
-    } else if origin == *GIST_RAW_ORIGIN {
-        load_gist_from_raw_url(url).await
     } else {
         Err(InvalidUrl::RejectedOrigin.into())
     }
