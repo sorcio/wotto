@@ -276,7 +276,7 @@ mod state {
                     let state = slf.clone();
                     tokio::spawn(async move {
                         let load_result = if module_name.trim().starts_with("https://") {
-                            state.rustico().load_module_web(&module_name).await
+                            state.rustico().load_module_from_url(&module_name).await
                         } else {
                             state.rustico().load_module(module_name).await
                         };

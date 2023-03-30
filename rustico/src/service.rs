@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
+use tracing::info;
 use wasmtime::*;
 
 use crate::runtime as rt;
-use crate::webload::{load_module_from_url, Domain, InvalidUrl, WebError, WebModule};
+use crate::webload::{load_module_from_url, Domain, InvalidUrl, ResolvedModule, WebError};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -53,7 +54,7 @@ pub struct Service {
     engine: Engine,
     modules: Arc<Mutex<HashMap<String, Module>>>,
     linker: Linker<RuntimeData>,
-    web_modules: Arc<Mutex<HashMap<String, WebModule>>>,
+    web_modules: Arc<Mutex<HashMap<String, ResolvedModule>>>,
 }
 
 fn make_engine() -> Engine {
@@ -121,6 +122,17 @@ impl Service {
     }
 
     pub async fn load_module(&self, name: String) -> Result<String> {
+        if let Some((key, webmodule)) = self.web_modules.lock().await.remove_entry(&name) {
+            // in case this was a webmodule, we reload it
+            // TODO: subsequent requests to load/reload a webmodule should wait
+            // until the operation is done.
+            // TODO: on failure, we are losing the existing module entry; we
+            // should preserve it instead.
+            info!("reloading module {key} which had url {}", webmodule.url());
+            let webmodule = webmodule.load().await?;
+            self.web_modules.lock().await.insert(key, webmodule);
+            return Ok(name);
+        }
         // quick and dirty name validation + path loading
         const MODULES_PATH: &str = "examples";
         let name_as_path = PathBuf::from_str(&name).map_err(|_| Error::InvalidModuleName)?;
@@ -133,9 +145,13 @@ impl Service {
         Ok(fqn)
     }
 
-    pub async fn load_module_web(&self, url: &str) -> Result<String> {
+    pub async fn load_module_from_url(&self, url: &str) -> Result<String> {
         let url: url::Url = url.parse().map_err(|_| InvalidUrl::ParseError)?;
         let webmodule = load_module_from_url(url).await?;
+        self.load_web_module(webmodule).await
+    }
+
+    async fn load_web_module(&self, webmodule: ResolvedModule) -> Result<String> {
         let canonical_name = canonicalize_name(webmodule.name())?;
         let user = webmodule.user();
         let namespace = match webmodule.domain() {
@@ -143,11 +159,14 @@ impl Service {
             Domain::Other(domain) => format!("{user}@{domain}"),
         };
 
-        let module = Module::new(&self.engine, webmodule.content()).map_err(Error::Wasm)?;
+        let bytes = webmodule
+            .content()
+            .expect("loaded module should already have content");
+        let module = Module::new(&self.engine, bytes).map_err(Error::Wasm)?;
         let fqn = self
             .add_module(Some(namespace), canonical_name, module)
             .await;
-
+        self.web_modules.lock().await.insert(fqn.clone(), webmodule);
         Ok(fqn)
     }
 
