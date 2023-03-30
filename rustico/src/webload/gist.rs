@@ -3,26 +3,26 @@ use crate::service::Result;
 use tracing::warn;
 use url::Url;
 
-pub(crate) fn is_hex_string(s: &str) -> bool {
+fn is_hex_string(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Parsed Gist url
-pub(crate) struct Gist<'a> {
-    pub(crate) user: &'a str,
-    pub(crate) gist_id: &'a str,
-    pub(crate) blob: Option<&'a str>,
-    pub(crate) commit: Option<&'a str>,
-    pub(crate) file_path: Option<&'a str>,
-    pub(crate) fragment: Option<&'a str>,
+struct Gist<'a> {
+    user: &'a str,
+    gist_id: &'a str,
+    blob: Option<&'a str>,
+    commit: Option<&'a str>,
+    file_path: Option<&'a str>,
+    fragment: Option<&'a str>,
 }
 
 impl<'a> Gist<'a> {
-    pub(crate) fn new(url: &'a Url) -> Result<Self> {
+    fn new(url: &'a Url) -> Result<Self> {
         Self::parse(url)
     }
 
-    pub(crate) fn parse(url: &'a Url) -> Result<Self> {
+    fn parse(url: &'a Url) -> Result<Self> {
         let segments: Vec<_> = url.path().trim_matches('/').splitn(5, '/').collect();
 
         match segments[..] {
@@ -83,7 +83,7 @@ impl<'a> Gist<'a> {
         }
     }
 
-    pub(crate) fn build_api_url(&self) -> String {
+    fn build_api_url(&self) -> String {
         // see https://docs.github.com/en/rest/gists/gists?apiVersion=2022-11-28#get-a-gist
         if let Some(commit) = self.commit() {
             format!("https://api.github.com/gists/{}/{commit}", self.gist_id())
@@ -92,7 +92,7 @@ impl<'a> Gist<'a> {
         }
     }
 
-    pub(crate) fn build_raw_url(&self) -> Option<String> {
+    fn build_raw_url(&self) -> Option<String> {
         if let Self {
             user,
             gist_id,
@@ -109,31 +109,31 @@ impl<'a> Gist<'a> {
         }
     }
 
-    pub(crate) fn user(&self) -> &'a str {
+    fn user(&self) -> &'a str {
         self.user
     }
 
-    pub(crate) fn gist_id(&self) -> &'a str {
+    fn gist_id(&self) -> &'a str {
         self.gist_id
     }
 
-    pub(crate) fn blob(&self) -> Option<&'a str> {
+    fn blob(&self) -> Option<&'a str> {
         self.blob
     }
 
-    pub(crate) fn commit(&self) -> Option<&'a str> {
+    fn commit(&self) -> Option<&'a str> {
         self.commit
     }
 
-    pub(crate) fn file_path(&self) -> Option<&'a str> {
+    fn file_path(&self) -> Option<&'a str> {
         self.file_path
     }
 
-    pub(crate) fn file_name_hint(&self) -> Option<GistFileNameHint<'a>> {
+    fn file_name_hint(&self) -> Option<GistFileNameHint<'a>> {
         self.fragment?.strip_prefix("file-").map(GistFileNameHint)
     }
 
-    pub(crate) fn eq_with_blob(&self, url: &'_ Url) -> bool {
+    fn eq_with_blob(&self, url: &'_ Url) -> bool {
         if let Ok(other) = Gist::parse(url) {
             self.user() == other.user()
                 && self.gist_id() == other.gist_id()
@@ -146,10 +146,10 @@ impl<'a> Gist<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct GistFileNameHint<'a>(&'a str);
+struct GistFileNameHint<'a>(&'a str);
 
 impl GistFileNameHint<'_> {
-    pub(crate) fn matches(self, other: &str) -> bool {
+    fn matches(self, other: &str) -> bool {
         if self.0.len() == other.len() {
             self.0.chars().zip(other.chars()).all(|(h, c)| {
                 match (h.to_ascii_lowercase(), c.to_ascii_lowercase()) {
@@ -163,7 +163,7 @@ impl GistFileNameHint<'_> {
     }
 }
 
-pub(crate) fn guess_gist_file_name<'a>(
+fn guess_gist_file_name<'a>(
     files: &'a serde_json::Map<String, serde_json::Value>,
     gist: &Gist,
 ) -> Option<(String, &'a serde_json::Map<String, serde_json::Value>)> {
@@ -216,7 +216,7 @@ pub(crate) fn guess_gist_file_name<'a>(
     None
 }
 
-pub(crate) enum GistGuessResult {
+enum GistGuessResult {
     Found(WebModule),
     MustFetch {
         user: String,
@@ -235,7 +235,7 @@ impl From<Option<GistGuessResult>> for GistGuessResult {
     }
 }
 
-pub(crate) fn extract_gist_from_json(
+fn extract_gist_from_json(
     json: serde_json::Value,
     gist: Gist,
 ) -> Option<GistGuessResult> {
@@ -279,7 +279,7 @@ pub(crate) fn extract_gist_from_json(
     )))
 }
 
-pub(crate) fn github_basic_auth() -> Result<(String, String)> {
+fn github_basic_auth() -> Result<(String, String)> {
     let text = std::fs::read_to_string("github.token").map_err(|_| WebError::NoCredentials)?;
     let lines: Vec<_> = text.split_ascii_whitespace().take(2).collect();
     match lines[..] {
