@@ -34,13 +34,33 @@ layer_features! {
     #[cfg(feature = "telemetry")]
     fn make_telemetry_layer() {
         use opentelemetry::global;
-        // Allows you to pass along context (i.e., trace IDs) across services
+        use opentelemetry::runtime::Tokio;
+        // // Allows you to pass along context (i.e., trace IDs) across services
         global::set_text_map_propagator(opentelemetry_jaeger::Propagator::new());
-        let tracer = opentelemetry_jaeger::new_pipeline()
+        let tracer = opentelemetry_jaeger::new_agent_pipeline()
             .with_service_name("rusto")
-            .install_simple()?;
+            .install_batch(Tokio)?;
         let opentelemetry = tracing_opentelemetry::layer().with_tracer(tracer);
         opentelemetry
+
+        // Note: opentelemetry-jaeger export will be deprecated in the future,
+        // and a migration to opentelemetry-otlp is encouraged:
+        // https://github.com/open-telemetry/opentelemetry-specification/pull/2858
+        // This is currently not easy because tracing-opentelemetry depends on
+        // an older version of opentelemetry than the one required by the
+        // latest opentelemetry-otlp version (yeah sorry I don't keep track
+        // either). We could use an older release, but
+        // open-telemetry/opentelemetry-rust#873 is a blocker. Basically, we
+        // should wait until a new tracing-opentelemetry release supports
+        // opentelemetry 0.19, which might be soon enough, or something else
+        // changes. The new exporter would be used more or less like this:
+        //
+        //     let otlp_exporter = opentelemetry_otlp::new_exporter().tonic();
+        //     let tracer = opentelemetry_otlp::new_pipeline()
+        //         .tracing()
+        //         .with_exporter(otlp_exporter)
+        //         .install_batch(Tokio);
+
     }
 
     #[cfg(feature = "tokio-console")]
@@ -54,7 +74,7 @@ layer_features! {
         tracing_subscriber::fmt::Layer::new()
             .compact()
             .with_writer(std::io::stderr)
-            .and_then(
+            .with_filter(
                 tracing_subscriber::EnvFilter::builder()
                     .with_default_directive(tracing::metadata::LevelFilter::ERROR.into())
                     .from_env()?,
