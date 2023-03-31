@@ -74,13 +74,20 @@ layer_features! {
     #[cfg(feature = "stderr-tracing")]
     fn make_stderr_tracing_layer() {
         use tracing_subscriber::prelude::*;
+        use tracing_subscriber::EnvFilter;
+        let default = if cfg!(debug_assertions) {
+            "rusto=trace,rustico=trace,warn"
+        } else {
+            "warn"
+        };
         tracing_subscriber::fmt::Layer::new()
             .compact()
             .with_writer(std::io::stderr)
             .with_filter(
-                tracing_subscriber::EnvFilter::builder()
-                    .with_default_directive(tracing::metadata::LevelFilter::ERROR.into())
-                    .from_env()?,
+                EnvFilter::builder()
+                    .with_default_directive(tracing::metadata::LevelFilter::WARN.into())
+                    .try_from_env()
+                    .or_else(|_| EnvFilter::builder().parse(default))?
             )
     }
 }
