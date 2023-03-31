@@ -39,6 +39,9 @@ layer_features! {
         global::set_text_map_propagator(opentelemetry_jaeger::Propagator::new());
         let tracer = opentelemetry_jaeger::new_agent_pipeline()
             .with_service_name("rusto")
+            .with_max_packet_size(9216) // macos max, might need to be tweaked
+            .with_auto_split_batch(true)
+            .with_instrumentation_library_tags(false)
             .install_batch(Tokio)?;
         let opentelemetry = tracing_opentelemetry::layer().with_tracer(tracer);
         opentelemetry
@@ -82,7 +85,7 @@ layer_features! {
     }
 }
 
-pub(crate) fn setup_tracing() -> Result<(), Box<dyn std::error::Error>> {
+pub(crate) fn setup_tracing() -> Result<impl Drop, Box<dyn std::error::Error>> {
     // A bit of overkill, just cramming in everything from Tokio tutorial (see
     // https://tokio.rs/tokio/topics/tracing-next-steps); we will clean up
     // later, doesn't matter now.
@@ -91,11 +94,27 @@ pub(crate) fn setup_tracing() -> Result<(), Box<dyn std::error::Error>> {
 
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    let registry = tracing_subscriber::registry();
-    registry
+    tracing_subscriber::registry()
         .with(make_telemetry_layer()?)
         .with(make_stderr_tracing_layer()?)
         .with(make_tokio_console_layer()?)
-        .try_init()
-        .map_err(|err| err.into())
+        .try_init()?;
+
+    Ok(Tracing)
+}
+
+/// Provides shutdown of tracing stuff when dropped. Returned by
+/// [setup_tracing()].
+struct Tracing;
+
+impl Drop for Tracing {
+    fn drop(&mut self) {
+        // Add shutdown operations here. If we need to keep some reference
+        // or track some state, we can use self.
+
+        eprintln!("Shutting down tracing providers...");
+
+        #[cfg(feature = "telemetry")]
+        opentelemetry::global::shutdown_tracer_provider();
+    }
 }
