@@ -3,6 +3,8 @@ use std::sync::Arc;
 use futures::prelude::*;
 use irc::client::prelude::*;
 use rusto_utils::debug::debug_arc;
+use tracing::{info, error, trace, debug};
+use valuable::Valuable;
 use warp::Filter;
 
 use crate::parsing;
@@ -35,29 +37,29 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
         let ctrl_c_task = tokio::spawn(ctrl_c_monitor(Arc::downgrade(&state)));
 
         let _ = state.clone().irc_task().await;
-        eprintln!("irc_task quit");
+        trace!("irc_task quit");
 
         ctrl_c_task.abort();
 
         // TODO close web task cleanly?
-        eprintln!("shutting down web server...");
+        trace!("shutting down web server");
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), web_task).await;
 
         // state must have zero strong references at this point
         #[cfg(debug_assertions)]
         {
-            eprintln!("irc state: {}", debug_arc(&state));
+            debug!("irc state: {}", debug_arc(&state));
         }
 
         join_handles
     };
 
-    eprintln!("shutting down epoch timer...");
+    trace!("shutting down epoch timer...");
     for handle in join_handles {
         let _ = handle.join();
     }
 
-    eprintln!("all done, bye!");
+    trace!("all done, bye!");
 
     Ok(())
 }
@@ -65,7 +67,7 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
 async fn ctrl_c_monitor(state: std::sync::Weak<BotState>) {
     let Ok(_) = tokio::signal::ctrl_c().await else { return; };
     if let Some(state) = state.upgrade() {
-        eprintln!("received Ctrl-C; requesting quit");
+        info!("received Ctrl-C; requesting quit");
         state.request_quit();
     }
 }
@@ -111,6 +113,8 @@ mod state {
     use irc::client::Client;
     use irc::proto::Prefix;
     use tokio::sync::{AcquireError, RwLock, Semaphore};
+    use tracing::{info, error};
+    use valuable::Valuable;
 
     use super::{BotCommand, CommandName, UserMask};
     use crate::throttling::Throttler;
@@ -119,18 +123,24 @@ mod state {
         list: Vec<UserMask>,
     }
 
+    impl core::fmt::Debug for TrustedUsers {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_list().entries(self.iter()).finish()
+        }
+    }
+
     impl TrustedUsers {
         fn from_config(config: &Config) -> Self {
             let list = match config.get_option("default_trust") {
                 Some(prefix) => match prefix.parse() {
                     Ok(prefix) => vec![prefix],
                     Err(_) => {
-                        eprintln!("warning: default_trust cannot be parsed!");
+                        error!("warning: default_trust cannot be parsed!");
                         vec![]
                     }
                 },
                 None => {
-                    eprintln!("warning: no default_trust option specified");
+                    error!("warning: no default_trust option specified");
                     vec![]
                 }
             };
@@ -247,7 +257,7 @@ mod state {
                         };
                         slf.reply(response_target, message).await;
                     } else {
-                        eprintln!("invalid prefix: {:?}", cmd.args());
+                        error!("invalid prefix: {:?}", cmd.args());
                     }
                 }
                 CommandName::Plain(x) if x == "untrust" => {
@@ -256,17 +266,14 @@ mod state {
                     }
                     let mut trusted = slf.trusted.write().await;
                     *trusted = TrustedUsers::from_config(&slf.config);
-                    eprintln!("trusted list reset");
+                    error!("trusted list reset");
                 }
                 CommandName::Plain(x) if x == "trust-list" => {
                     if !check_trust(&slf, source).await {
                         return;
                     }
                     let trusted = slf.trusted.read().await;
-                    eprintln!("Trusted list:");
-                    for p in trusted.iter() {
-                        eprintln!(" * {p:?}");
-                    }
+                    info!(?trusted, "trust-list");
                 }
                 CommandName::Plain(x) if x == "load" => {
                     if !check_trust(&slf, source).await {
@@ -278,12 +285,12 @@ mod state {
                         let load_result = if module_name.trim().starts_with("https://") {
                             state.rustico().load_module_web(&module_name).await
                         } else {
-                            state.rustico().load_module(module_name).await
+                            state.rustico().load_module(module_name.clone()).await
                         };
                         let response = match load_result {
                             Ok(name) => format!("loaded module: {name}"),
                             Err(error) => {
-                                eprintln!("management load failed: {error}");
+                                error!(err = %error, module_name, "cannot load module");
                                 "cannot load module (check logs)".to_string()
                             }
                         };
@@ -308,7 +315,7 @@ mod state {
                     slf.request_quit();
                 }
                 _ => {
-                    eprintln!("not a valid management command: {cmd:?}");
+                    error!(cmd = cmd.as_value(), "not a valid management command");
                 }
             }
         }
@@ -344,7 +351,7 @@ mod state {
 
         pub(crate) async fn irc_task(self: Arc<Self>) -> Result<(), irc::error::Error> {
             while !self.quitting.load(std::sync::atomic::Ordering::SeqCst) {
-                eprintln!("starting new client...");
+                info!("starting new client...");
                 let mut client = Client::from_config(self.config.clone()).await?;
                 client.identify()?;
                 let stream = client.stream()?;
@@ -352,7 +359,7 @@ mod state {
                 match super::irc_stream_handler(stream, self.clone()).await {
                     Ok(_) => {}
                     Err(error) => {
-                        eprintln!("irc stream loop terminated with error: {error}");
+                        error!(err = %error, "irc stream loop terminated");
                     }
                 }
             }
@@ -386,7 +393,7 @@ async fn irc_stream_handler(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // let client = state.client();
     while let Some(message) = stream.next().await.transpose()? {
-        println!("\x1b[2m{}\x1b[0m", message.to_string().trim_end());
+        info!(message = %message.to_string().trim_end(), "irc message");
         // let prefixes = [
         //     "!",
         //     &format!("{} ", client.current_nickname()),
@@ -397,7 +404,7 @@ async fn irc_stream_handler(
         match message.command {
             Command::PRIVMSG(_, ref text) => {
                 if let Ok(cmd) = BotCommand::parse(&[], text) {
-                    eprintln!("got cmd {cmd:?}");
+                    info!(cmd = cmd.as_value(), "got command");
                     let Some(response_target) = message.response_target().map(str::to_owned) else { break; };
                     let w = Arc::downgrade(&state);
                     handle_command(
@@ -464,7 +471,7 @@ fn handle_command<F, Fut>(
                         .await;
                 }
                 Err(err) => {
-                    eprintln!("error on command: {err}");
+                    error!(error = %err, cmd = cmd.as_value(), "error on command");
                 }
             }
             // being super-explicit that engine permit is released only after the
@@ -476,7 +483,7 @@ fn handle_command<F, Fut>(
 
 struct ParseError;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Valuable)]
 pub(crate) enum CommandName {
     Plain(String),
     Namespaced(String, String),
@@ -491,7 +498,7 @@ impl std::fmt::Display for CommandName {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Valuable)]
 pub(crate) struct BotCommand {
     // prefix: String,
     pub(crate) command: CommandName,
@@ -524,8 +531,8 @@ async fn web_server(state: std::sync::Weak<BotState>) {
                 async move {
                     let Some(state) = state.upgrade() else { return; };
                     match state.rustico().load_module(module.clone()).await {
-                        Ok(_) => eprintln!("loaded module {module}"),
-                        Err(err) => eprintln!("cannot load module {module}: {err}"),
+                        Ok(_) => info!(module, "loaded module"),
+                        Err(err) => error!(module, %err, "cannot load module"),
                     };
                 }
             }
@@ -546,8 +553,8 @@ async fn web_server(state: std::sync::Weak<BotState>) {
                 async move {
                     let Some(state) = state.upgrade() else { return; };
                     match state.client(|client| client.send_join(&chan_name)) {
-                        Some(Ok(_)) => {}
-                        Some(Err(err)) => eprintln!("cannot join channel {chan_name}: {err}"),
+                        Some(Ok(_)) => info!(channel = chan_name, "joined channel"),
+                        Some(Err(err)) => error!(channel = chan_name, %err, "cannot join channel"),
                         None => {}
                     }
                 }
