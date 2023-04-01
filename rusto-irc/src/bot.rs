@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use futures::future::join_all;
 use futures::prelude::*;
 use irc::client::prelude::*;
 use rusto_utils::debug::debug_arc;
-use tracing::{info, error, trace, debug};
+use tracing::{debug, error, info, trace, warn};
 use valuable::Valuable;
 use warp::Filter;
 
@@ -24,12 +25,14 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
             async { web_server(state).await }
         });
 
-        let epoch_timer = std::thread::spawn({
+        let epoch_timer = tokio::spawn({
             let state = Arc::downgrade(&state);
-            move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                let Some(state) = state.upgrade() else { break; };
-                state.rustico().increment_epoch();
+            async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    let Some(state) = state.upgrade() else { break; };
+                    state.rustico().increment_epoch();
+                }
             }
         });
         join_handles.push(epoch_timer);
@@ -55,9 +58,11 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     trace!("shutting down epoch timer...");
-    for handle in join_handles {
-        let _ = handle.join();
-    }
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(1000),
+        join_all(join_handles),
+    )
+    .await;
 
     trace!("all done, bye!");
 
