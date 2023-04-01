@@ -66,7 +66,9 @@ pub(crate) struct Registry<K> {
 }
 
 impl<K> Registry<K>
-where K: Hash + Eq {
+where
+    K: Hash + Eq,
+{
     async fn entry_or_default(&self, key: K) -> &ModuleEntry {
         // Since we never remove a ModuleEntry, we can force the lifetime to be
         // the same as self. I would like to do this without unsafe if possible

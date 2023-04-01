@@ -385,7 +385,10 @@ impl GistResolvedModule {
     }
 
     fn set_content<B: Into<Vec<u8>>>(&mut self, content: B) {
-        assert!(self.content.is_none(), "set_content() requires that content is None");
+        assert!(
+            self.content.is_none(),
+            "set_content() requires that content is None"
+        );
         self.content = Some(content.into());
     }
 }

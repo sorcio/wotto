@@ -81,7 +81,6 @@ impl ResolvedModule {
             .downcast_mut()
             .expect("downcast should be only called when the concrete type is known")
     }
-
 }
 
 impl core::fmt::Debug for ResolvedModule {

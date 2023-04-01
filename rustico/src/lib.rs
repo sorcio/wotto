@@ -1,9 +1,9 @@
 #![feature(pointer_is_aligned)]
 
 mod assemblyscript;
+mod registry;
 #[cfg(feature = "repl")]
 pub mod repl;
-mod registry;
 mod runtime;
 mod service;
 mod webload;

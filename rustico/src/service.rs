@@ -131,7 +131,7 @@ impl Service {
             // newer version) vs when we want to just attempt a reload?
             // unsure if the "just reload" case actually exists
             let new_webmodule = webload::resolve(url.clone()).await?;
-            let new_fqn = self.fqn_for_module(&webmodule);
+            let new_fqn = self.fqn_for_module(webmodule);
             if new_fqn != name {
                 // a given url used to provide a module name, but it
                 // doesn't anymore. the resolver is supposed to make sure
@@ -198,12 +198,12 @@ impl Service {
             Domain::Builtin => None,
             Domain::Other(domain) => Some(format!("{user}@{domain}")),
         };
-        let fqn = if let Some(namespace) = namespace {
+
+        if let Some(namespace) = namespace {
             format!("{namespace}/{canonical_name}")
         } else {
             canonical_name
-        };
-        fqn
+        }
     }
 
     #[tracing::instrument(skip(self))]
