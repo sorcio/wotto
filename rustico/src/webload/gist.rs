@@ -324,11 +324,11 @@ pub(super) async fn resolve_gist(url: &Url) -> Result<impl ResolverResult> {
     extract_gist_from_json(json, gist).ok_or(WebError::NotWasm.into())
 }
 
-pub(crate) async fn load_content(module: ResolvedModule) -> Result<ResolvedModule> {
+pub(crate) async fn load_content(module: &mut ResolvedModule) -> Result<()> {
     if module.content().is_some() {
-        return Ok(module);
+        return Ok(());
     }
-    let (resolver, resolver_result) = module.disassemble::<GistResolvedModule>();
+    let resolver_result = module.downcast::<GistResolvedModule>();
     let fetch_url = resolver_result.build_raw_url();
 
     let client = reqwest::ClientBuilder::new()
@@ -350,8 +350,8 @@ pub(crate) async fn load_content(module: ResolvedModule) -> Result<ResolvedModul
         .error_for_status()
         .map_err(WebError::TemporaryFailure)?;
     let content = response.bytes().await.map_err(WebError::TemporaryFailure)?;
-    let new_resolver_result = resolver_result.with_content(content);
-    Ok(resolver.with_result(new_resolver_result))
+    resolver_result.set_content(content);
+    Ok(())
 }
 
 struct GistResolvedModule {
@@ -384,21 +384,9 @@ impl GistResolvedModule {
         format!("https://gist.githubusercontent.com/{user}/{gist_id}/raw/{blob}/{file_path}")
     }
 
-    fn with_content<B: Into<Vec<u8>>>(self, content: B) -> Self {
-        let Self {
-            user,
-            gist_id,
-            blob,
-            file_path,
-            content: None,
-        } = self else { panic!() };
-        Self {
-            user,
-            gist_id,
-            blob,
-            file_path,
-            content: Some(content.into()),
-        }
+    fn set_content<B: Into<Vec<u8>>>(&mut self, content: B) {
+        assert!(self.content.is_none(), "set_content() requires that content is None");
+        self.content = Some(content.into());
     }
 }
 
@@ -423,7 +411,7 @@ impl ResolverResult for GistResolvedModule {
         self.content.take()
     }
 
-    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
 }

@@ -8,6 +8,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{info, span, Level};
 use wasmtime::*;
 
+use crate::registry::Registry;
 use crate::runtime as rt;
 use crate::webload::{load_module_from_url, Domain, InvalidUrl, ResolvedModule, WebError};
 
@@ -54,7 +55,7 @@ pub struct Service {
     engine: Engine,
     modules: Arc<Mutex<HashMap<String, Module>>>,
     linker: Linker<RuntimeData>,
-    web_modules: Arc<Mutex<HashMap<String, ResolvedModule>>>,
+    registry: Registry,
 }
 
 fn make_engine() -> Engine {
@@ -81,7 +82,7 @@ impl Service {
             engine,
             modules: Arc::new(HashMap::new().into()),
             linker,
-            web_modules: Arc::new(HashMap::new().into()),
+            registry: Registry::default(),
         }
     }
 
@@ -126,16 +127,10 @@ impl Service {
     #[tracing::instrument(skip(self))]
     pub async fn load_module(&self, name: String) -> Result<String> {
         span!(Level::TRACE, "load_module", name);
-        if let Some((key, webmodule)) = self.web_modules.lock().await.remove_entry(&name) {
-            // in case this was a webmodule, we reload it
-            // TODO: subsequent requests to load/reload a webmodule should wait
-            // until the operation is done.
-            // TODO: on failure, we are losing the existing module entry; we
-            // should preserve it instead.
-            info!("reloading module {key} which had url {}", webmodule.url());
-            let webmodule = webmodule.load().await?;
-            self.web_modules.lock().await.insert(key, webmodule);
-            return Ok(name);
+        if let Some(mut webmodule) = self.registry.lock_entry(&name).await {
+                info!(module = name, url = %webmodule.url(), "reloading module");
+                webmodule.ensure_content().await?;
+                return Ok(name);
         }
         // quick and dirty name validation + path loading
         const MODULES_PATH: &str = "examples";
@@ -172,7 +167,7 @@ impl Service {
         let fqn = self
             .add_module(Some(namespace), canonical_name, module)
             .await;
-        self.web_modules.lock().await.insert(fqn.clone(), webmodule);
+        self.registry.register(fqn.clone(), webmodule).await;
         Ok(fqn)
     }
 

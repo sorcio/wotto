@@ -9,8 +9,6 @@ use url::{Origin, Url};
 
 use crate::service::Result;
 
-use self::gist::load_content;
-
 #[derive(Error, Debug)]
 pub enum InvalidUrl {
     #[error("url cannot be parsed")]
@@ -43,7 +41,7 @@ trait ResolverResult {
     fn name(&self) -> &str;
     fn content(&self) -> Option<&[u8]>;
     fn take_content(&mut self) -> Option<Vec<u8>>;
-    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 pub(crate) struct ResolvedModule {
@@ -73,22 +71,17 @@ impl ResolvedModule {
         self.resolved.content()
     }
 
-    pub(crate) async fn load(self) -> Result<Self> {
+    pub(crate) async fn ensure_content(&mut self) -> Result<()> {
         self.loader.ensure_content(self).await
     }
 
-    fn disassemble<T: ResolverResult + 'static>(self) -> (PartialResolver, Box<T>) {
-        (
-            PartialResolver {
-                loader: self.loader,
-                url: self.url,
-            },
-            self.resolved
-                .into_any()
-                .downcast()
-                .expect("downcast should be only called when the concrete type is known"),
-        )
+    fn downcast<T: ResolverResult + 'static>(&mut self) -> &mut T {
+        self.resolved
+            .as_any_mut()
+            .downcast_mut()
+            .expect("downcast should be only called when the concrete type is known")
     }
+
 }
 
 impl core::fmt::Debug for ResolvedModule {
@@ -101,30 +94,6 @@ impl core::fmt::Debug for ResolvedModule {
             .field("name", &self.name())
             .field("has_content", &self.content().is_some())
             .finish()
-    }
-}
-
-/// Temporary value holding a [`ResolvedModule`] while a new `resolved` inner
-/// is being prepared. Returned by [`ResolvedModule::disassemble()`].
-///
-/// When a new result is ready, a new ResolvedModule can be build with the
-/// [`PartialResolver::with_result()`] method.
-struct PartialResolver {
-    loader: Loader,
-    url: Url,
-}
-
-impl PartialResolver {
-    fn with_result<T>(self, result: T) -> ResolvedModule
-    where
-        T: ResolverResult + Send + Sync + 'static,
-    {
-        let Self { loader, url, .. } = self;
-        ResolvedModule {
-            loader,
-            url,
-            resolved: Box::new(result),
-        }
     }
 }
 
@@ -152,13 +121,12 @@ impl Loader {
         })
     }
 
-    async fn ensure_content(self, module: ResolvedModule) -> Result<ResolvedModule> {
+    async fn ensure_content(self, module: &mut ResolvedModule) -> Result<()> {
         if module.content().is_some() {
-            Ok(module)
-        } else {
-            match self {
-                Loader::Gist => load_content(module).await,
-            }
+            return Ok(());
+        }
+        match self {
+            Loader::Gist => gist::load_content(module).await,
         }
     }
 }
@@ -205,6 +173,7 @@ pub(crate) async fn resolve(url: Url) -> Result<ResolvedModule> {
 }
 
 pub(crate) async fn load_module_from_url(url: Url) -> Result<ResolvedModule> {
-    let module = resolve(url).await?;
-    module.load().await
+    let mut module = resolve(url).await?;
+    module.ensure_content().await?;
+    Ok(module)
 }

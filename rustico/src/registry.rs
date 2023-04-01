@@ -69,14 +69,6 @@ impl ModuleEntry {
         }
     }
 
-    fn try_read(&self) -> Option<ModuleRef> {
-        let guard = self.module.try_read().ok()?;
-        match &*guard {
-            Some(_) => Some(ModuleRef::new(guard)),
-            None => None,
-        }
-    }
-
     async fn replace(&self, module: ResolvedModule) -> (ModuleRef, Option<ResolvedModule>) {
         let mut guard = self.module.write().await;
         let old = guard.replace(module);
@@ -103,10 +95,6 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
     async fn entry_or_default(&self, key: String) -> &ModuleEntry {
         // Since we never remove a ModuleEntry, we can force the lifetime to be
         // the same as self. I would like to do this without unsafe if possible
