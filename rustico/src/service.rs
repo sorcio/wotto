@@ -5,10 +5,12 @@ use std::sync::Arc;
 
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
+use tracing::info;
 use wasmtime::*;
 
-use crate::runtime as rt;
-use crate::webload::{load_module_from_url, Domain, InvalidUrl, WebError, WebModule};
+use crate::registry::Registry;
+use crate::webload::{Domain, InvalidUrl, ResolvedModule, WebError};
+use crate::{runtime as rt, webload};
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -32,6 +34,8 @@ pub enum Error {
     InvalidUrl(#[from] InvalidUrl),
     #[error("error while fetching url ({0})")]
     CannotFetch(#[from] WebError),
+    #[error("module {0} previously at url {1} not found")]
+    ModuleGone(String, url::Url),
 }
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
@@ -53,12 +57,14 @@ pub struct Service {
     engine: Engine,
     modules: Arc<Mutex<HashMap<String, Module>>>,
     linker: Linker<RuntimeData>,
-    web_modules: Arc<Mutex<HashMap<String, WebModule>>>,
+    registry: Registry<String>,
 }
 
 fn make_engine() -> Engine {
     let mut config = Config::new();
     config
+        .debug_info(true)
+        .wasm_backtrace_details(WasmBacktraceDetails::Enable)
         .async_support(true)
         .epoch_interruption(true)
         .cranelift_opt_level(OptLevel::Speed);
@@ -78,7 +84,7 @@ impl Service {
             engine,
             modules: Arc::new(HashMap::new().into()),
             linker,
-            web_modules: Arc::new(HashMap::new().into()),
+            registry: Registry::default(),
         }
     }
 
@@ -109,54 +115,106 @@ impl Service {
         }
     }
 
-    async fn add_module(&self, namespace: Option<String>, name: String, module: Module) -> String {
-        let fqn = if let Some(namespace) = namespace {
-            format!("{namespace}/{name}")
-        } else {
-            name
-        };
+    async fn add_module(&self, fqn: String, module: Module) {
         let mut modules = self.modules.lock().await;
-        modules.insert(fqn.clone(), module);
-        fqn
+        modules.insert(fqn, module);
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn load_module(&self, name: String) -> Result<String> {
+        let mut entry = self.registry.lock_entry_mut(name.clone()).await;
+        if let Some(webmodule) = &mut *entry {
+            let url = webmodule.url().clone();
+            info!(module = name, %url, "reloading module");
+            // TODO should we make explicit an distinction between the case
+            // when the user requests re-resolution (e.g. same URL gives a
+            // newer version) vs when we want to just attempt a reload?
+            // unsure if the "just reload" case actually exists
+            let new_webmodule = webload::resolve(url.clone()).await?;
+            let new_fqn = self.fqn_for_module(webmodule);
+            if new_fqn != name {
+                // a given url used to provide a module name, but it
+                // doesn't anymore. the resolver is supposed to make sure
+                // this never happens, but let's make extra sure we don't
+                // mess with the registry state here.
+                return Err(Error::ModuleGone(name, url));
+            }
+            self.load_web_module_with_lock(&mut entry, name.clone(), new_webmodule)
+                .await?;
+            return Ok(name);
+        }
         // quick and dirty name validation + path loading
         const MODULES_PATH: &str = "examples";
         let name_as_path = PathBuf::from_str(&name).map_err(|_| Error::InvalidModuleName)?;
         let file_name = name_as_path.file_name().ok_or(Error::InvalidModuleName)?;
         let path = Path::new(MODULES_PATH).join(file_name);
-        let canonical_name = canonicalize_name(&path)?;
+        // "builtin" modules have a short fqn with no namespace or prefix
+        // TODO: unify the builtin and web code paths
+        let fqn = canonicalize_name(&path)?;
         let module = Module::from_file(&self.engine, &path).map_err(Error::Wasm)?;
-        let fqn = self.add_module(None, canonical_name, module).await;
-
+        self.add_module(fqn.clone(), module).await;
         Ok(fqn)
     }
 
-    pub async fn load_module_web(&self, url: &str) -> Result<String> {
+    #[tracing::instrument(skip(self))]
+    pub async fn load_module_from_url(&self, url: &str) -> Result<String> {
         let url: url::Url = url.parse().map_err(|_| InvalidUrl::ParseError)?;
-        let webmodule = load_module_from_url(url).await?;
-        let canonical_name = canonicalize_name(webmodule.name())?;
+        let webmodule = webload::resolve(url).await?;
+        // the content might or might not be loaded at this point, but we have
+        // enough information to determine the name of the module
+        let fqn = self.fqn_for_module(&webmodule);
+        self.load_web_module(fqn.clone(), webmodule).await?;
+        Ok(fqn)
+    }
+
+    #[tracing::instrument(skip(self))]
+    async fn load_web_module(&self, fqn: String, webmodule: ResolvedModule) -> Result<()> {
+        let mut entry = self.registry.lock_entry_mut(fqn.clone()).await;
+        self.load_web_module_with_lock(&mut entry, fqn, webmodule)
+            .await
+    }
+
+    async fn load_web_module_with_lock<'a>(
+        &'a self,
+        entry: &'a mut Option<ResolvedModule>,
+        fqn: String,
+        mut webmodule: ResolvedModule,
+    ) -> Result<()> {
+        webmodule.ensure_content().await?;
+        let bytes = webmodule
+            .content()
+            .expect("loaded module should already have content");
+        let wasm_module = Module::new(&self.engine, bytes).map_err(Error::Wasm)?;
+        self.add_module(fqn.clone(), wasm_module).await;
+        *entry = Some(webmodule);
+        Ok(())
+    }
+
+    fn fqn_for_module(&self, webmodule: &ResolvedModule) -> String {
+        let canonical_name = canonicalize_name(webmodule.name()).unwrap();
         let user = webmodule.user();
         let namespace = match webmodule.domain() {
-            Domain::Github => user.to_string(),
-            Domain::Other(domain) => format!("{user}@{domain}"),
+            Domain::Github => Some(user.to_string()),
+            Domain::Builtin => None,
+            Domain::Other(domain) => Some(format!("{user}@{domain}")),
         };
 
-        let module = Module::new(&self.engine, webmodule.content()).map_err(Error::Wasm)?;
-        let fqn = self
-            .add_module(Some(namespace), canonical_name, module)
-            .await;
-
-        Ok(fqn)
+        if let Some(namespace) = namespace {
+            format!("{namespace}/{canonical_name}")
+        } else {
+            canonical_name
+        }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn run_module(
         &self,
         module_name: &str,
         entry_point: &str,
         args: &str,
     ) -> Result<String> {
+        // If module is being reloaded, wait until new code is available
+        self.registry.wait_entry(module_name).await;
         let module = {
             let modules = self.modules.lock().await;
             modules

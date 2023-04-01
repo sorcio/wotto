@@ -1,43 +1,6 @@
-use lazy_static::lazy_static;
-use thiserror::Error;
-use tracing::warn;
-use url::{Origin, Url};
-
+use super::{Domain, InvalidUrl, ResolvedModule, ResolverResult, WebError};
 use crate::service::Result;
-
-#[derive(Error, Debug)]
-pub enum InvalidUrl {
-    #[error("url cannot be parsed")]
-    ParseError,
-    #[error("rejected origin")]
-    RejectedOrigin,
-    #[error("url cannot contain username or password")]
-    CredentialsNotAllowed,
-    #[error("invalid path")]
-    InvalidPath,
-}
-
-#[derive(Error, Debug)]
-pub enum WebError {
-    #[error("temporary failure: {0}")]
-    TemporaryFailure(#[source] reqwest::Error),
-    #[error("web client error: {0}")]
-    ReqwestError(#[source] reqwest::Error),
-    #[error("not a webassembly module")]
-    NotWasm,
-    #[error("file too large")]
-    TooLarge,
-    #[error("missing credentials")]
-    NoCredentials,
-}
-
-lazy_static! {
-    static ref GIST_ORIGIN: Origin = "https://gist.github.com/".parse::<Url>().unwrap().origin();
-    static ref GIST_RAW_ORIGIN: Origin = "https://gist.githubusercontent.com/"
-        .parse::<Url>()
-        .unwrap()
-        .origin();
-}
+use url::Url;
 
 fn is_hex_string(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit())
@@ -125,23 +88,6 @@ impl<'a> Gist<'a> {
             format!("https://api.github.com/gists/{}/{commit}", self.gist_id())
         } else {
             format!("https://api.github.com/gists/{}", self.gist_id())
-        }
-    }
-
-    fn build_raw_url(&self) -> Option<String> {
-        if let Self {
-            user,
-            gist_id,
-            blob: Some(blob),
-            file_path: Some(file_path),
-            ..
-        } = self
-        {
-            Some(format!(
-                "https://gist.githubusercontent.com/{user}/{gist_id}/raw/{blob}/{file_path}"
-            ))
-        } else {
-            None
         }
     }
 
@@ -252,26 +198,7 @@ fn guess_gist_file_name<'a>(
     None
 }
 
-enum GistGuessResult {
-    Found(WebModule),
-    MustFetch {
-        user: String,
-        name: String,
-        raw_url: String,
-    },
-    NotFound,
-}
-
-impl From<Option<GistGuessResult>> for GistGuessResult {
-    fn from(value: Option<GistGuessResult>) -> Self {
-        match value {
-            Some(g) => g,
-            None => Self::NotFound,
-        }
-    }
-}
-
-fn extract_gist_from_json(json: serde_json::Value, gist: Gist) -> Option<GistGuessResult> {
+fn extract_gist_from_json(json: serde_json::Value, gist: Gist) -> Option<GistResolvedModule> {
     let files = json.as_object()?.get("files")?.as_object()?;
     let (name, file) = if let Some(file_name) = gist.file_path() {
         // if a file name is specified, it must be valid
@@ -281,35 +208,68 @@ fn extract_gist_from_json(json: serde_json::Value, gist: Gist) -> Option<GistGue
         guess_gist_file_name(files, &gist)?
     };
 
-    let user = gist.user().to_string();
-    let content = if file.get("truncated")?.as_bool()? {
-        let raw_url = file.get("raw_url")?.as_str()?.to_string();
-        if gist.eq_with_blob(&raw_url.parse().ok()?) {
-            return Some(GistGuessResult::MustFetch {
-                user,
-                name,
-                raw_url,
-            });
-        } else {
-            // TODO decide whether we want to validate the raw url (against
-            // the gist commit history or something)
-            warn!("partially supported case: raw gist with non-current revision");
-            return Some(GistGuessResult::MustFetch {
-                user,
-                name,
-                raw_url: gist.build_raw_url()?,
-            });
-        }
+    // Find content already in the json document, if not truncated. We might
+    // disregard this later, so let's not make a copy yet.
+    let have_content = !file
+        .get("truncated")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let content = if have_content {
+        file.get("content").and_then(|c| c.as_str())
     } else {
-        file.get("content")?.as_str()?
+        None
     };
 
-    Some(GistGuessResult::Found(WebModule::new(
-        Domain::Github,
-        user,
-        name,
-        content,
-    )))
+    // We know the file exists, but does it match the requested revision? We
+    // have three cases:
+    // 1) no specific revision was requested, so we must assume latest
+    // 2) a specific revision (commit sha) was requested; the api call was
+    //    already made for the correct revision, so we can assume that the file
+    //    we see here is the file we need
+    // 3) a raw url was given, which contains a blob sha, but not a commit sha;
+    //    we have the option to validate that the url matches the info on gh,
+    //    but that would require us to either make multiple api calls until we
+    //    find a file matching the blob sha, or use git directly to fetch the
+    //    right object (afaik the gists api doesn't have a way to fetch by
+    //    blob). since neither is implemented (maybe todo?) what we do now is
+    //    just to trust the info given in the raw url.
+
+    let raw_url: Url = file.get("raw_url")?.as_str()?.parse().ok()?;
+
+    if let Some(blob) = gist.blob() {
+        // case (3) above, let's trust the raw url given by the user; if the
+        // file happens to be already the latest we might be in luck because
+        // perhaps we have the content
+        debug_assert!(gist.file_path().is_some());
+
+        let blob = blob.to_string();
+        if gist.eq_with_blob(&raw_url) {
+            // ok, let's use the json content (if any)
+            Some(GistResolvedModule::new(
+                gist,
+                name,
+                blob,
+                content.map(|s| s.bytes().collect()),
+            ))
+        } else {
+            // we disregard the json entirely
+            let file_path = gist
+                .file_path()
+                .expect("raw url Gists should always be created with a file_path")
+                .to_string();
+            Some(GistResolvedModule::new(gist, file_path, blob, None))
+        }
+    } else {
+        // either case 1 or 2, which are handled the same way
+        let parsed = Gist::new(&raw_url).ok()?;
+        let blob = parsed.blob()?.to_string();
+        Some(GistResolvedModule::new(
+            gist,
+            name,
+            blob,
+            content.map(|s| s.bytes().collect()),
+        ))
+    }
 }
 
 fn github_basic_auth() -> Result<(String, String)> {
@@ -321,7 +281,15 @@ fn github_basic_auth() -> Result<(String, String)> {
     }
 }
 
-async fn load_gist_from_url(url: &Url) -> Result<WebModule> {
+fn client() -> Result<reqwest::Client> {
+    Ok(reqwest::ClientBuilder::new()
+        .user_agent("https://github.com/sorcio/rusto")
+        .https_only(true)
+        .build()
+        .map_err(WebError::ReqwestError)?)
+}
+
+pub(super) async fn resolve_gist(url: &Url) -> Result<impl ResolverResult> {
     debug_assert_eq!(url.scheme(), "https");
     debug_assert!(matches!(
         url.host(),
@@ -332,11 +300,7 @@ async fn load_gist_from_url(url: &Url) -> Result<WebModule> {
 
     let gist = Gist::new(url)?;
     let api_url = gist.build_api_url();
-    let client = reqwest::ClientBuilder::new()
-        .user_agent("https://github.com/sorcio/rusto")
-        .https_only(true)
-        .build()
-        .map_err(WebError::ReqwestError)?;
+    let client = client()?;
     let (username, password) = github_basic_auth()?;
     let request = client
         .request(reqwest::Method::GET, api_url)
@@ -357,92 +321,100 @@ async fn load_gist_from_url(url: &Url) -> Result<WebModule> {
         .await
         .map_err(WebError::ReqwestError)?;
 
-    match extract_gist_from_json(json, gist).into() {
-        GistGuessResult::Found(wm) => Ok(wm),
-        GistGuessResult::MustFetch {
-            user,
-            name,
-            raw_url,
-        } => {
-            let raw_req = client
-                .request(reqwest::Method::GET, raw_url)
-                .basic_auth(&username, Some(&password))
-                .build()
-                .map_err(WebError::ReqwestError)?;
-            let content = client
-                .execute(raw_req)
-                .await
-                .map_err(WebError::TemporaryFailure)?
-                .error_for_status()
-                .map_err(WebError::TemporaryFailure)?
-                .bytes()
-                .await
-                .map_err(WebError::TemporaryFailure)?;
-            Ok(WebModule::new(Domain::Github, user, name, content))
-        }
-        GistGuessResult::NotFound => Err(WebError::NotWasm.into()),
+    extract_gist_from_json(json, gist).ok_or(WebError::NotWasm.into())
+}
+
+pub(crate) async fn load_content(module: &mut ResolvedModule) -> Result<()> {
+    if module.content().is_some() {
+        return Ok(());
     }
+    let resolver_result = module.downcast::<GistResolvedModule>();
+    let fetch_url = resolver_result.build_raw_url();
+
+    let client = reqwest::ClientBuilder::new()
+        .user_agent("https://github.com/sorcio/rusto")
+        .https_only(true)
+        .build()
+        .map_err(WebError::ReqwestError)?;
+    let (username, password) = github_basic_auth()?;
+    let request = client
+        .request(reqwest::Method::GET, fetch_url)
+        .header("Accept", "application/vnd.github.raw")
+        .basic_auth(&username, Some(&password))
+        .build()
+        .map_err(WebError::ReqwestError)?;
+    let response = client
+        .execute(request)
+        .await
+        .map_err(WebError::TemporaryFailure)?
+        .error_for_status()
+        .map_err(WebError::TemporaryFailure)?;
+    let content = response.bytes().await.map_err(WebError::TemporaryFailure)?;
+    resolver_result.set_content(content);
+    Ok(())
 }
 
-async fn find_loader(url: &Url) -> Result<WebModule> {
-    let origin = url.origin();
-    if origin == *GIST_ORIGIN || origin == *GIST_RAW_ORIGIN {
-        load_gist_from_url(url).await
-    } else {
-        Err(InvalidUrl::RejectedOrigin.into())
-    }
-}
-
-/// Domain defines the domain for the user, in case one day we want to have a
-/// more complex namespacing scheme, or code authentication. E.g.
-/// `Domain::Github` indicates that the user (in `WebModule`) is a GitHub user.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Domain {
-    Github,
-    #[allow(dead_code)]
-    Other(&'static str),
-}
-
-#[derive(Debug)]
-pub(crate) struct WebModule {
-    domain: Domain,
+struct GistResolvedModule {
     user: String,
-    name: String,
-    content: Vec<u8>,
+    gist_id: String,
+    file_path: String,
+    blob: String,
+    content: Option<Vec<u8>>,
 }
 
-impl WebModule {
-    fn new<B>(domain: Domain, user: String, name: String, content: B) -> Self
-    where
-        B: Into<Vec<u8>>,
-    {
+impl GistResolvedModule {
+    fn new(gist: Gist, file_path: String, blob: String, content: Option<Vec<u8>>) -> Self {
         Self {
-            domain,
-            user,
-            name,
-            content: content.into(),
+            user: gist.user().to_string(),
+            gist_id: gist.gist_id().to_string(),
+            file_path,
+            blob,
+            content,
         }
     }
 
-    pub(crate) fn domain(&self) -> Domain {
-        self.domain
+    fn build_raw_url(&self) -> String {
+        let Self {
+            user,
+            gist_id,
+            blob,
+            file_path,
+            ..
+        } = self;
+        format!("https://gist.githubusercontent.com/{user}/{gist_id}/raw/{blob}/{file_path}")
     }
 
-    pub(crate) fn user(&self) -> &str {
+    fn set_content<B: Into<Vec<u8>>>(&mut self, content: B) {
+        assert!(
+            self.content.is_none(),
+            "set_content() requires that content is None"
+        );
+        self.content = Some(content.into());
+    }
+}
+
+impl ResolverResult for GistResolvedModule {
+    fn domain(&self) -> Domain {
+        Domain::Github
+    }
+
+    fn user(&self) -> &str {
         &self.user
     }
 
-    pub(crate) fn name(&self) -> &str {
-        &self.name
+    fn name(&self) -> &str {
+        &self.file_path
     }
 
-    pub(crate) fn content(&self) -> &[u8] {
-        &self.content
+    fn content(&self) -> Option<&[u8]> {
+        self.content.as_deref()
     }
-}
 
-pub(crate) async fn load_module_from_url(url: Url) -> Result<WebModule> {
-    let module = find_loader(&url).await?;
-    Ok(module)
+    fn take_content(&mut self) -> Option<Vec<u8>> {
+        self.content.take()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
