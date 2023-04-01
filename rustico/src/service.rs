@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 use tokio::sync::{mpsc, Mutex};
-use tracing::info;
+use tracing::{info, span, Level};
 use wasmtime::*;
 
 use crate::runtime as rt;
@@ -60,6 +60,8 @@ pub struct Service {
 fn make_engine() -> Engine {
     let mut config = Config::new();
     config
+        .debug_info(true)
+        .wasm_backtrace_details(WasmBacktraceDetails::Enable)
         .async_support(true)
         .epoch_interruption(true)
         .cranelift_opt_level(OptLevel::Speed);
@@ -121,7 +123,9 @@ impl Service {
         fqn
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn load_module(&self, name: String) -> Result<String> {
+        span!(Level::TRACE, "load_module", name);
         if let Some((key, webmodule)) = self.web_modules.lock().await.remove_entry(&name) {
             // in case this was a webmodule, we reload it
             // TODO: subsequent requests to load/reload a webmodule should wait
@@ -145,12 +149,14 @@ impl Service {
         Ok(fqn)
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn load_module_from_url(&self, url: &str) -> Result<String> {
         let url: url::Url = url.parse().map_err(|_| InvalidUrl::ParseError)?;
         let webmodule = load_module_from_url(url).await?;
         self.load_web_module(webmodule).await
     }
 
+    #[tracing::instrument(skip(self))]
     async fn load_web_module(&self, webmodule: ResolvedModule) -> Result<String> {
         let canonical_name = canonicalize_name(webmodule.name())?;
         let user = webmodule.user();
@@ -170,6 +176,7 @@ impl Service {
         Ok(fqn)
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn run_module(
         &self,
         module_name: &str,

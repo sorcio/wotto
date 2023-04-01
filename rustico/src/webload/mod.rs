@@ -91,6 +91,19 @@ impl ResolvedModule {
     }
 }
 
+impl core::fmt::Debug for ResolvedModule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedModule")
+            .field("loader", &self.loader)
+            .field("url", &self.url)
+            .field("domain", &self.domain())
+            .field("user", &self.user())
+            .field("name", &self.name())
+            .field("has_content", &self.content().is_some())
+            .finish()
+    }
+}
+
 /// Temporary value holding a [`ResolvedModule`] while a new `resolved` inner
 /// is being prepared. Returned by [`ResolvedModule::disassemble()`].
 ///
