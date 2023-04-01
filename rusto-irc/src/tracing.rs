@@ -43,8 +43,8 @@ layer_features! {
             .with_auto_split_batch(true)
             .with_instrumentation_library_tags(false)
             .install_batch(Tokio)?;
-        let opentelemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-        opentelemetry
+
+        tracing_opentelemetry::layer().with_tracer(tracer)
 
         // Note: opentelemetry-jaeger export will be deprecated in the future,
         // and a migration to opentelemetry-otlp is encouraged:

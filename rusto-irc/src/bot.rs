@@ -3,8 +3,7 @@ use std::sync::Arc;
 use futures::future::join_all;
 use futures::prelude::*;
 use irc::client::prelude::*;
-use rusto_utils::debug::debug_arc;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 use valuable::Valuable;
 use warp::Filter;
 
@@ -51,6 +50,8 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
         // state must have zero strong references at this point
         #[cfg(debug_assertions)]
         {
+            use rusto_utils::debug::debug_arc;
+            use tracing::debug;
             debug!("irc state: {}", debug_arc(&state));
         }
 
@@ -211,7 +212,7 @@ mod state {
         engine_semaphore: Semaphore,
         quitting: AtomicBool,
         known_nickname: RwLock<Option<String>>,
-        known_hostmask: RwLock<Option<UserMask>>
+        known_hostmask: RwLock<Option<UserMask>>,
     }
 
     impl BotState {
@@ -348,7 +349,7 @@ mod state {
             const DEFAULT_IF_UNKNOWN: usize = 128;
             let prefix_length = match self.known_hostmask.try_read().as_deref() {
                 Ok(Some(mask)) => mask.prefix_length(),
-                _ => DEFAULT_IF_UNKNOWN
+                _ => DEFAULT_IF_UNKNOWN,
             };
             // overhead must be calculated considering the relayed message,
             // which contains our own prefix, not the send command:
@@ -374,14 +375,15 @@ mod state {
             {
                 let prefix = if i == 0 { "\x02>\x0f" } else { "\x02:\x0f" };
                 let line = format!("{prefix}{line}");
-                let overhead = self.estimate_overhead(b"PRIVMSG", &target);
+                let overhead = self.estimate_overhead(b"PRIVMSG", target);
                 let max_payload_size = MAX_SIZE.saturating_sub(overhead);
                 let boundary = line.floor_char_boundary(max_payload_size);
                 let fitted = if boundary < line.len() {
                     // truncate to make it fit, and replace the last bit with a
                     // suffix to mark that truncation happened
                     let truncate_suffix = '…';
-                    let boundary = line.floor_char_boundary(max_payload_size - truncate_suffix.len_utf8());
+                    let boundary =
+                        line.floor_char_boundary(max_payload_size - truncate_suffix.len_utf8());
                     let truncated = &line[..boundary];
                     format!("{truncated}{truncate_suffix}")
                 } else {
@@ -439,11 +441,21 @@ mod state {
             if let Ok(mut known_nickname) = self.known_nickname.try_write() {
                 let previous_nickname = known_nickname.replace(nickname);
                 if previous_nickname != *known_nickname {
-                    info!(nickname = &*known_nickname, previous_nickname, "changed nickname");
-                    self.client(|client| self.discover_hostmask(client, known_nickname.as_deref().unwrap_or_default().to_string()));
+                    info!(
+                        nickname = &*known_nickname,
+                        previous_nickname, "changed nickname"
+                    );
+                    self.client(|client| {
+                        self.discover_hostmask(
+                            client,
+                            known_nickname.as_deref().unwrap_or_default().to_string(),
+                        )
+                    });
                 }
             } else {
-                error!("attempt to acquire rwlock on known_nickname failed; this should not happen");
+                error!(
+                    "attempt to acquire rwlock on known_nickname failed; this should not happen"
+                );
             }
         }
 
@@ -456,7 +468,9 @@ mod state {
             if let Ok(mut known_hostmask) = self.known_hostmask.try_write() {
                 *known_hostmask = Some(usermask);
             } else {
-                error!("attempt to acquire rwlock on known_hostmask failed; this should not happen");
+                error!(
+                    "attempt to acquire rwlock on known_hostmask failed; this should not happen"
+                );
             }
         }
     }
@@ -533,7 +547,7 @@ async fn irc_stream_handler(
                         } else {
                             warn!("invalid RPL_WHOISUSER response from server");
                         }
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -679,6 +693,7 @@ async fn web_server(state: std::sync::Weak<BotState>) {
         })
         .map(|_| "");
 
+    #[allow(clippy::let_with_type_underscore)]
     let filter: _ = hello.or(load_module).or(join_channel);
 
     warp::serve(filter).run(([127, 0, 0, 1], 3030)).await;
