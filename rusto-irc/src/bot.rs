@@ -14,8 +14,8 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
 
     let rustico = rustico::Service::new();
 
-    let join_handles = {
-        let mut join_handles = vec![];
+    let futures = {
+        let mut futures = vec![];
 
         let state = Arc::new(BotState::new(config, rustico));
 
@@ -24,17 +24,7 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
             async { web_server(state).await }
         });
 
-        let epoch_timer = tokio::spawn({
-            let state = Arc::downgrade(&state);
-            async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                    let Some(state) = state.upgrade() else { break; };
-                    state.rustico().increment_epoch();
-                }
-            }
-        });
-        join_handles.push(epoch_timer);
+        futures.push(state.engine_epoch_timer());
 
         let ctrl_c_task = tokio::spawn(ctrl_c_monitor(Arc::downgrade(&state)));
 
@@ -55,15 +45,11 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
             debug!("irc state: {}", debug_arc(&state));
         }
 
-        join_handles
+        futures
     };
 
-    trace!("shutting down epoch timer...");
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_millis(1000),
-        join_all(join_handles),
-    )
-    .await;
+    trace!("waiting for full shutdown");
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(1000), join_all(futures)).await;
 
     trace!("all done, bye!");
 
@@ -406,6 +392,17 @@ mod state {
 
         pub(crate) async fn engine_permit(&self) -> Result<impl Drop + '_, AcquireError> {
             self.engine_semaphore.acquire().await
+        }
+
+        pub(crate) fn engine_epoch_timer(self: &Arc<Self>) -> impl core::future::Future {
+            let weak = Arc::downgrade(&self.clone());
+            struct ServiceRef(Arc<BotState>);
+            impl AsRef<rustico::Service> for ServiceRef {
+                fn as_ref(&self) -> &rustico::Service {
+                    &self.0.rustico
+                }
+            }
+            rustico::Service::epoch_timer(move || weak.upgrade().map(ServiceRef))
         }
 
         pub(crate) async fn irc_task(self: Arc<Self>) -> Result<(), irc::error::Error> {

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -90,6 +91,21 @@ impl Service {
 
     pub fn increment_epoch(&self) {
         self.engine.increment_epoch();
+    }
+
+    pub fn epoch_timer<F, P>(myself: F) -> impl Future
+    where
+        F: Fn() -> Option<P> + Send + 'static,
+        P: AsRef<Self>,
+    {
+        tokio::task::spawn_blocking(move || {
+            let interval = std::time::Duration::from_millis(5);
+            loop {
+                std::thread::sleep(interval);
+                let Some(slf) = myself() else { break; };
+                slf.as_ref().engine.increment_epoch();
+            }
+        })
     }
 
     pub async fn listen(&self, mut rx: mpsc::Receiver<Command>, tx: mpsc::Sender<Result<String>>) {
