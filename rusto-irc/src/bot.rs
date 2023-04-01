@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use futures::future::join_all;
 use futures::prelude::*;
 use irc::client::prelude::*;
 use rusto_utils::debug::debug_arc;
-use tracing::{info, error, trace, debug};
+use tracing::{debug, error, info, trace, warn};
 use valuable::Valuable;
 use warp::Filter;
 
@@ -24,12 +25,14 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
             async { web_server(state).await }
         });
 
-        let epoch_timer = std::thread::spawn({
+        let epoch_timer = tokio::spawn({
             let state = Arc::downgrade(&state);
-            move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                let Some(state) = state.upgrade() else { break; };
-                state.rustico().increment_epoch();
+            async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    let Some(state) = state.upgrade() else { break; };
+                    state.rustico().increment_epoch();
+                }
             }
         });
         join_handles.push(epoch_timer);
@@ -55,9 +58,11 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     trace!("shutting down epoch timer...");
-    for handle in join_handles {
-        let _ = handle.join();
-    }
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(1000),
+        join_all(join_handles),
+    )
+    .await;
 
     trace!("all done, bye!");
 
@@ -77,6 +82,20 @@ pub(crate) struct UserMask {
     nick: String,
     user: String,
     host: String,
+}
+
+impl UserMask {
+    pub(crate) fn new(nick: String, user: String, host: String) -> Self {
+        Self { nick, user, host }
+    }
+
+    pub(crate) fn from_parts(nick: &str, user: &str, host: &str) -> Self {
+        Self::new(nick.to_string(), user.to_string(), host.to_string())
+    }
+
+    pub(crate) fn prefix_length(&self) -> usize {
+        self.nick.bytes().len() + 1 + self.user.bytes().len() + 1 + self.host.bytes().len()
+    }
 }
 
 impl TryFrom<irc::proto::Prefix> for UserMask {
@@ -113,7 +132,7 @@ mod state {
     use irc::client::Client;
     use irc::proto::Prefix;
     use tokio::sync::{AcquireError, RwLock, Semaphore};
-    use tracing::{info, error};
+    use tracing::{error, info, trace};
     use valuable::Valuable;
 
     use super::{BotCommand, CommandName, UserMask};
@@ -191,6 +210,8 @@ mod state {
         throttler: Throttler,
         engine_semaphore: Semaphore,
         quitting: AtomicBool,
+        known_nickname: RwLock<Option<String>>,
+        known_hostmask: RwLock<Option<UserMask>>
     }
 
     impl BotState {
@@ -210,6 +231,8 @@ mod state {
                 throttler,
                 engine_semaphore,
                 quitting: AtomicBool::new(false),
+                known_nickname: RwLock::default(),
+                known_hostmask: RwLock::default(),
             }
         }
 
@@ -320,6 +343,20 @@ mod state {
             }
         }
 
+        fn estimate_overhead(&self, command: &[u8], target: &str) -> usize {
+            // very conservative default if we don't know for sure yet
+            const DEFAULT_IF_UNKNOWN: usize = 128;
+            let prefix_length = match self.known_hostmask.try_read().as_deref() {
+                Ok(Some(mask)) => mask.prefix_length(),
+                _ => DEFAULT_IF_UNKNOWN
+            };
+            // overhead must be calculated considering the relayed message,
+            // which contains our own prefix, not the send command:
+            // :nick!user@host PRIVMSG target :payload\r\n
+            // 1              2       3      45       6 7
+            prefix_length + target.bytes().len() + command.len() + 7
+        }
+
         #[tracing::instrument]
         pub(crate) async fn reply<R: AsRef<str> + Debug, M: AsRef<str> + Debug>(
             &self,
@@ -337,11 +374,31 @@ mod state {
             {
                 let prefix = if i == 0 { "\x02>\x0f" } else { "\x02:\x0f" };
                 let line = format!("{prefix}{line}");
-                let overhead = target.bytes().len() + b"PRIVMSG   :\r\n".len();
+                let overhead = self.estimate_overhead(b"PRIVMSG", &target);
                 let max_payload_size = MAX_SIZE.saturating_sub(overhead);
                 let boundary = line.floor_char_boundary(max_payload_size);
+                let fitted = if boundary < line.len() {
+                    // truncate to make it fit, and replace the last bit with a
+                    // suffix to mark that truncation happened
+                    let truncate_suffix = '…';
+                    let boundary = line.floor_char_boundary(max_payload_size - truncate_suffix.len_utf8());
+                    let truncated = &line[..boundary];
+                    format!("{truncated}{truncate_suffix}")
+                } else {
+                    line.to_string()
+                };
+                // let truncated = &line[..boundary];
+                let estimated_size = overhead + fitted.bytes().len();
+                trace!(
+                    target,
+                    line = fitted,
+                    overhead,
+                    estimated_size,
+                    "want to send"
+                );
                 self.throttler.acquire_one().await;
-                let _ = self.client(|client| client.send_privmsg(target, &line[..boundary]));
+                trace!(target, line = fitted, "enqueued");
+                let _ = self.client(|client| client.send_privmsg(target, fitted));
             }
         }
 
@@ -354,6 +411,9 @@ mod state {
                 info!("starting new client...");
                 let mut client = Client::from_config(self.config.clone()).await?;
                 client.identify()?;
+                {
+                    *self.known_nickname.write().await = None;
+                }
                 let stream = client.stream()?;
                 *self.client.write().await = Some(client);
                 match super::irc_stream_handler(stream, self.clone()).await {
@@ -372,6 +432,31 @@ mod state {
                 .swap(true, std::sync::atomic::Ordering::SeqCst);
             if !already_quitting {
                 let _ = self.client(|client| client.send_quit("requested"));
+            }
+        }
+
+        pub(super) fn set_last_known_nickname(&self, nickname: String) {
+            if let Ok(mut known_nickname) = self.known_nickname.try_write() {
+                let previous_nickname = known_nickname.replace(nickname);
+                if previous_nickname != *known_nickname {
+                    info!(nickname = &*known_nickname, previous_nickname, "changed nickname");
+                    self.client(|client| self.discover_hostmask(client, known_nickname.as_deref().unwrap_or_default().to_string()));
+                }
+            } else {
+                error!("attempt to acquire rwlock on known_nickname failed; this should not happen");
+            }
+        }
+
+        fn discover_hostmask(&self, client: &Client, nickname: String) {
+            let _ = client.send(irc::proto::Command::WHOIS(None, nickname));
+        }
+
+        pub(crate) fn found_hostmask(&self, nick: &str, user: &str, host: &str) {
+            let usermask = UserMask::from_parts(nick, user, host);
+            if let Ok(mut known_hostmask) = self.known_hostmask.try_write() {
+                *known_hostmask = Some(usermask);
+            } else {
+                error!("attempt to acquire rwlock on known_hostmask failed; this should not happen");
             }
         }
     }
@@ -418,6 +503,38 @@ async fn irc_stream_handler(
                             }
                         },
                     );
+                }
+            }
+            Command::Response(response, args) if !args.is_empty() => {
+                // let's extract our last known nickname (some servers might be
+                // non-compliant and not include a target as the first argument
+                // to the response, but I think it's rare enough to ignore for
+                // the moment)
+                let target = &args[0];
+                let prefix = irc::proto::Prefix::new_from_str(target);
+                if let irc::proto::Prefix::Nickname(nickname, _, _) = prefix {
+                    state.set_last_known_nickname(nickname);
+                } else {
+                    warn!(
+                        ?response,
+                        invalid_target = target,
+                        "non-compliant server did not send a valid target in response"
+                    );
+                }
+                // handle specific responses
+                #[allow(clippy::single_match)]
+                match response {
+                    Response::RPL_WHOISUSER => {
+                        // "<client> <nick> <username> <host> * :<realname>"
+                        if let [client, nick, username, host, _, _realname] = &args[..] {
+                            if client == nick {
+                                state.found_hostmask(nick, username, host);
+                            }
+                        } else {
+                            warn!("invalid RPL_WHOISUSER response from server");
+                        }
+                    },
+                    _ => {}
                 }
             }
             _ => {}
