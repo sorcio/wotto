@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
 
@@ -49,9 +50,13 @@ impl ModuleEntry {
         }
     }
 
-    async fn lock(&self) -> ModuleRefMut {
+    async fn write(&self) -> ModuleRefMut {
         let guard = self.module.write().await;
         ModuleRefMut::new(guard)
+    }
+
+    async fn read(&self) -> impl Drop + '_ {
+        self.module.read().await
     }
 }
 
@@ -82,8 +87,31 @@ where
         unsafe { std::mem::transmute(entry) }
     }
 
-    pub(crate) async fn lock_entry(&self, key: K) -> ModuleRefMut {
-        self.entry_or_default(key).await.lock().await
+    async fn entry<Q>(&self, key: &Q) -> Option<&ModuleEntry>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let map = self.modules.lock().await;
+        let entry = map.get(key);
+        // Safety: see entry_or_default()
+        unsafe { std::mem::transmute(entry) }
+    }
+
+    pub(crate) async fn lock_entry_mut(&self, key: K) -> ModuleRefMut {
+        self.entry_or_default(key).await.write().await
+    }
+
+    /// Wait until no writers are touching the entry, if it exists; otherwise
+    /// return immediately.
+    pub(crate) async fn wait_entry<Q>(&self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        if let Some(entry) = self.entry(key).await {
+            entry.read().await;
+        }
     }
 }
 

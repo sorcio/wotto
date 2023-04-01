@@ -122,7 +122,7 @@ impl Service {
 
     #[tracing::instrument(skip(self))]
     pub async fn load_module(&self, name: String) -> Result<String> {
-        let mut entry = self.registry.lock_entry(name.clone()).await;
+        let mut entry = self.registry.lock_entry_mut(name.clone()).await;
         if let Some(webmodule) = &mut *entry {
             let url = webmodule.url().clone();
             info!(module = name, %url, "reloading module");
@@ -169,7 +169,7 @@ impl Service {
 
     #[tracing::instrument(skip(self))]
     async fn load_web_module(&self, fqn: String, webmodule: ResolvedModule) -> Result<()> {
-        let mut entry = self.registry.lock_entry(fqn.clone()).await;
+        let mut entry = self.registry.lock_entry_mut(fqn.clone()).await;
         self.load_web_module_with_lock(&mut entry, fqn, webmodule)
             .await
     }
@@ -213,6 +213,8 @@ impl Service {
         entry_point: &str,
         args: &str,
     ) -> Result<String> {
+        // If module is being reloaded, wait until new code is available
+        self.registry.wait_entry(module_name).await;
         let module = {
             let modules = self.modules.lock().await;
             modules
