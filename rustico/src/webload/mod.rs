@@ -164,16 +164,12 @@ lazy_static! {
 pub(crate) enum Domain {
     Github,
     #[allow(dead_code)]
+    Builtin,
+    #[allow(dead_code)]
     Other(&'static str),
 }
 
 pub(crate) async fn resolve(url: Url) -> Result<ResolvedModule> {
     let loader = Loader::from_url(&url)?;
     loader.resolve(url).await
-}
-
-pub(crate) async fn load_module_from_url(url: Url) -> Result<ResolvedModule> {
-    let mut module = resolve(url).await?;
-    module.ensure_content().await?;
-    Ok(module)
 }
