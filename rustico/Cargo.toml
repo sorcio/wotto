@@ -18,6 +18,7 @@ lazy_static = "1.4.0"
 tracing = "*"
 serde_json = "*"
 itertools = "0.10"
+parking_lot = "*"
 
 [features]
 repl = ["rustyline"]

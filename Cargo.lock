@@ -2027,6 +2027,7 @@ dependencies = [
  "anyhow",
  "itertools",
  "lazy_static",
+ "parking_lot 0.11.2",
  "reqwest",
  "rustyline",
  "serde_json",

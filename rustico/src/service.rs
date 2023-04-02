@@ -13,6 +13,8 @@ use crate::registry::Registry;
 use crate::webload::{Domain, InvalidUrl, ResolvedModule, WebError};
 use crate::{runtime as rt, webload};
 
+use self::utils::EpochTimer;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("wasm runtime error: {0}")]
@@ -59,6 +61,7 @@ pub struct Service {
     modules: Arc<Mutex<HashMap<String, Module>>>,
     linker: Linker<RuntimeData>,
     registry: Registry<String>,
+    epoch_timer: Arc<EpochTimer>,
 }
 
 fn make_engine() -> Engine {
@@ -86,6 +89,7 @@ impl Service {
             modules: Arc::new(HashMap::new().into()),
             linker,
             registry: Registry::default(),
+            epoch_timer: Arc::default(),
         }
     }
 
@@ -98,9 +102,11 @@ impl Service {
         F: Fn() -> Option<P> + Send + 'static,
         P: AsRef<Self>,
     {
+        let epoch_timer = myself().unwrap().as_ref().epoch_timer.clone();
         tokio::task::spawn_blocking(move || {
             let interval = std::time::Duration::from_millis(5);
             loop {
+                epoch_timer.wait();
                 std::thread::sleep(interval);
                 let Some(slf) = myself() else { break; };
                 slf.as_ref().engine.increment_epoch();
@@ -257,6 +263,7 @@ impl Service {
             .typed::<(), ()>(&mut store)
             .map_err(|_| Error::WrongFunctionType)?;
 
+        let _timer = self.epoch_timer.start();
         let duration = std::time::Duration::from_millis(5000);
         let fut = tyfunc.call_async(&mut store, ());
         match tokio::time::timeout(duration, fut).await {
@@ -276,6 +283,12 @@ impl Service {
 impl Default for Service {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.epoch_timer.shutdown();
     }
 }
 
@@ -341,4 +354,55 @@ fn canonicalize_name<P: AsRef<Path>>(path: P) -> Result<String> {
         .to_str()
         .ok_or(Error::InvalidModuleName)?
         .to_string())
+}
+
+mod utils {
+    use parking_lot::{Condvar, Mutex};
+    #[derive(Debug, Default)]
+    pub(super) struct EpochTimer {
+        cond_var: Condvar,
+        counter: Mutex<i32>,
+    }
+
+    impl EpochTimer {
+        fn increment(&self) {
+            let mut counter = self.counter.lock();
+            *counter += 1;
+            self.cond_var.notify_all();
+        }
+
+        fn decrement(&self) {
+            let mut counter = self.counter.lock();
+            *counter -= 1;
+            self.cond_var.notify_all();
+        }
+
+        pub(super) fn start(&self) -> EpochTimerGuard {
+            self.increment();
+            EpochTimerGuard(self)
+        }
+
+        pub(super) fn shutdown(&self) {
+            // TODO cleaner shutdown (with Drop guard)
+            let mut counter = self.counter.lock();
+            // just some obviously non-zero value:
+            *counter = i32::MIN;
+            self.cond_var.notify_all();
+        }
+
+        pub(super) fn wait(&self) {
+            let mut counter = self.counter.lock();
+            if *counter == 0 {
+                self.cond_var.wait(&mut counter);
+            }
+        }
+    }
+
+    pub(super) struct EpochTimerGuard<'a>(&'a EpochTimer);
+
+    impl<'a> Drop for EpochTimerGuard<'a> {
+        fn drop(&mut self) {
+            self.0.decrement();
+        }
+    }
 }
