@@ -1,9 +1,9 @@
 [workspace]
 members = [
     "rustico",
-    "rusto-irc",
+    "wotto-irc",
     "rustico-cli",
-    "rusto-utils",
+    "wotto-utils",
 ]
 
 [profile.release]

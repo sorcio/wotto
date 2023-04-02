@@ -10,7 +10,7 @@ use warp::Filter;
 use crate::parsing;
 
 pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = Config::load("rusto.toml")?;
+    let config = Config::load("wotto.toml")?;
 
     let rustico = rustico::Service::new();
 
@@ -40,7 +40,7 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
         // state must have zero strong references at this point
         #[cfg(debug_assertions)]
         {
-            use rusto_utils::debug::debug_arc;
+            use wotto_utils::debug::debug_arc;
             use tracing::debug;
             debug!("irc state: {}", debug_arc(&state));
         }

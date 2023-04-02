@@ -15,11 +15,11 @@ foo.wasm: foo.c
 
 # native only stuff:
 
-rusto.o: rusto.c
-	"$(CC)" -Wall -pedantic -nostdlib -g -c -o rusto.o rusto.c -I$$(xcrun --sdk macosx --show-sdk-path)/usr/include
+wotto.o: wotto.c
+	"$(CC)" -Wall -pedantic -nostdlib -g -c -o wotto.o wotto.c -I$$(xcrun --sdk macosx --show-sdk-path)/usr/include
 
 foo.o: foo.c
 	"$(CC)" -Wall -pedantic -nostdlib -g -c -o foo.o foo.c -I$$(xcrun --sdk macosx --show-sdk-path)/usr/include
 
-a.out: rusto.o foo.o	
-	"$(CC)" -fuse-ld=lld -v rusto.o foo.o -nostdlib -lSystem -o a.out -Wl,-L$$(xcrun --sdk macosx --show-sdk-path)/usr/lib
+a.out: wotto.o foo.o	
+	"$(CC)" -fuse-ld=lld -v wotto.o foo.o -nostdlib -lSystem -o a.out -Wl,-L$$(xcrun --sdk macosx --show-sdk-path)/usr/lib

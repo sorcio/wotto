@@ -4,13 +4,13 @@
 
 #ifdef __wasm32
 
-#define RustoFunction(name) __attribute__((export_name(#name))) void name(void)
-#define RUSTO_IMPORT(module, name) __attribute__((import_module(#module), import_name(#name)))
+#define WottoFunction(name) __attribute__((export_name(#name))) void name(void)
+#define WOTTO_IMPORT(module, name) __attribute__((import_module(#module), import_name(#name)))
 
 #else // ifdef __wasm32
 
-#define RustoFunction(name) void name(void)
-#define RUSTO_IMPORT(module, name)
+#define WottoFunction(name) void name(void)
+#define WOTTO_IMPORT(module, name)
 
 #endif // ifdef __wasm32
 
@@ -28,7 +28,7 @@ typedef unsigned char u8;
 // entire string.
 // 
 // The input string is always encoded as UTF-8 bytes.
-RUSTO_IMPORT(rusto, input) unsigned int input(u8 *buf, int len);
+WOTTO_IMPORT(wotto, input) unsigned int input(u8 *buf, int len);
 
 // Write len bytes from buf into the output string. Subsequent calls will
 // append to the output.
@@ -49,4 +49,4 @@ RUSTO_IMPORT(rusto, input) unsigned int input(u8 *buf, int len);
 //
 // You must expect output to be shown only after the command returns. There is
 // currently no facility to stream output.
-RUSTO_IMPORT(rusto, output) void output(const u8 *buf, int len);
+WOTTO_IMPORT(wotto, output) void output(const u8 *buf, int len);

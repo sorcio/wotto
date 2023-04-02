@@ -1,5 +1,5 @@
 [package]
-name = "rusto"
+name = "wotto"
 version = "0.1.0"
 edition = "2021"
 
@@ -24,7 +24,7 @@ rustico = { path = "../rustico" }
 warp = { version = "0.3", default-features = false }
 nom = "7"
 leaky-bucket = "0.12.4"
-rusto-utils = { path = "../rusto-utils" }
+wotto-utils = { path = "../wotto-utils" }
 valuable = { version = "0.1", features = ["derive"] }
 
 # tracing

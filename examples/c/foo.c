@@ -1,8 +1,8 @@
-#include "rusto.h"
+#include "wotto.h"
 #include "foo.h"
 
 /// Always crash
-RustoFunction(crash)
+WottoFunction(crash)
 {
     size_t accumulator = 0;
     char *max_ptr = (char *)0x10000000;
@@ -19,7 +19,7 @@ RustoFunction(crash)
 ///
 /// Reverse the given input string. Understands UTF-8 but doesn't respect
 /// grapheme clusters, so "abc 🐕" will be reversed correctly but "🇮🇹" will not.
-RustoFunction(rev)
+WottoFunction(rev)
 {
     u8 buf[512];
     unsigned int len = input(buf, 512);
@@ -28,7 +28,7 @@ RustoFunction(rev)
 }
 
 /// Show the codepoints that make up the input string.
-RustoFunction(cp)
+WottoFunction(cp)
 {
     u8 buf[512];
     // u8 *buf = heap;

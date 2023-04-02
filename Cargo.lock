@@ -2085,31 +2085,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rusto"
-version = "0.1.0"
-dependencies = [
- "console-subscriber",
- "futures",
- "irc",
- "leaky-bucket",
- "nom",
- "opentelemetry",
- "opentelemetry-jaeger",
- "rustico",
- "rusto-utils",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "valuable",
- "warp",
-]
-
-[[package]]
-name = "rusto-utils"
-version = "0.1.0"
-
-[[package]]
 name = "rustversion"
 version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3343,6 +3318,31 @@ dependencies = [
  "unicode-xid",
  "url",
 ]
+
+[[package]]
+name = "wotto"
+version = "0.1.0"
+dependencies = [
+ "console-subscriber",
+ "futures",
+ "irc",
+ "leaky-bucket",
+ "nom",
+ "opentelemetry",
+ "opentelemetry-jaeger",
+ "rustico",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "valuable",
+ "warp",
+ "wotto-utils",
+]
+
+[[package]]
+name = "wotto-utils"
+version = "0.1.0"
 
 [[package]]
 name = "zstd"

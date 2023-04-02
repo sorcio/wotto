@@ -1,4 +1,4 @@
-#include "rusto.h"
+#include "wotto.h"
 
 #ifndef __wasm32
 

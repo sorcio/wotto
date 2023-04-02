@@ -283,7 +283,7 @@ fn github_basic_auth() -> Result<(String, String)> {
 
 fn client() -> Result<reqwest::Client> {
     Ok(reqwest::ClientBuilder::new()
-        .user_agent("https://github.com/sorcio/rusto")
+        .user_agent("https://github.com/sorcio/wotto")
         .https_only(true)
         .build()
         .map_err(WebError::ReqwestError)?)
@@ -331,11 +331,7 @@ pub(crate) async fn load_content(module: &mut ResolvedModule) -> Result<()> {
     let resolver_result = module.downcast::<GistResolvedModule>();
     let fetch_url = resolver_result.build_raw_url();
 
-    let client = reqwest::ClientBuilder::new()
-        .user_agent("https://github.com/sorcio/rusto")
-        .https_only(true)
-        .build()
-        .map_err(WebError::ReqwestError)?;
+    let client = client()?;
     let (username, password) = github_basic_auth()?;
     let request = client
         .request(reqwest::Method::GET, fetch_url)

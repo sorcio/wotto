@@ -45,7 +45,7 @@ struct DebugArcInner<T> {
 ///
 /// ```
 /// # use std::sync::Arc;
-/// use rusto_utils::debug::debug_arc;
+/// use wotto_utils::debug::debug_arc;
 /// let r = Arc::new(100);
 /// assert_eq!(debug_arc(&r), "Arc(strong=1, weak=1)");
 /// ```
@@ -54,7 +54,7 @@ struct DebugArcInner<T> {
 ///
 /// ```
 /// # use std::sync::Arc;
-/// use rusto_utils::debug::debug_arc;
+/// use wotto_utils::debug::debug_arc;
 /// let r = Arc::new(100);
 /// let r2 = r.clone();
 /// assert_eq!(debug_arc(&r), "Arc(strong=2, weak=1)");

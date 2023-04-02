@@ -12,7 +12,7 @@ use wasmtime::*;
 fn print<T>(mut caller: Caller<'_, T>, ptr: u32) -> WResult<()> {
     let memory = get_memory(&mut caller)?.data(&caller);
     let txt = AssemblyScriptString::from_memory(memory, ptr).ok_or(Error::InvalidPointer)?;
-    println!("rusto.print {txt}");
+    println!("wotto.print {txt}");
     Ok(())
 }
 
@@ -22,7 +22,7 @@ fn output<T: HasOutput>(mut caller: Caller<'_, T>, ptr: u32, len: u32) -> WResul
     let size = len as usize;
     let strdata = &memory[offset..][..size];
     let txt = std::str::from_utf8(strdata)?;
-    println!("rusto.output {txt}");
+    println!("wotto.output {txt}");
     runtime_data.output(txt);
     Ok(())
 }
@@ -52,11 +52,11 @@ pub(crate) fn add_to_linker<T>(
 where
     T: HasInput + HasOutput + 'static,
 {
-    linker.func_wrap("rusto", "output", output)?;
-    linker.func_wrap("rusto", "input", input)?;
+    linker.func_wrap("wotto", "output", output)?;
+    linker.func_wrap("wotto", "input", input)?;
 
     if enable_assembly_script_support {
-        linker.func_wrap("rusto", "print", print)?;
+        linker.func_wrap("wotto", "print", print)?;
         linker.func_wrap("env", "abort", env_abort)?;
     }
 

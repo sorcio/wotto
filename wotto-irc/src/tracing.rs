@@ -38,7 +38,7 @@ layer_features! {
         // // Allows you to pass along context (i.e., trace IDs) across services
         global::set_text_map_propagator(opentelemetry_jaeger::Propagator::new());
         let tracer = opentelemetry_jaeger::new_agent_pipeline()
-            .with_service_name("rusto")
+            .with_service_name("wotto")
             .with_max_packet_size(9216) // macos max, might need to be tweaked
             .with_auto_split_batch(true)
             .with_instrumentation_library_tags(false)
@@ -76,7 +76,7 @@ layer_features! {
         use tracing_subscriber::prelude::*;
         use tracing_subscriber::EnvFilter;
         let default = if cfg!(debug_assertions) {
-            "rusto=trace,rustico=trace,warn"
+            "wotto=trace,rustico=trace,warn"
         } else {
             "warn"
         };

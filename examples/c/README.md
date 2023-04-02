@@ -1,9 +1,9 @@
-# Building Rusto modules with C
+# Building Wotto modules with C
 
 ⚠️ Note: this is all very preliminary and expected to change drastically.
 
 You will need:
-- `rusto.h` (included here)
+- `wotto.h` (included here)
 - LLVM with clang and wasm32 support (see below if unsure)
 
 ## Which LLVM
@@ -56,15 +56,15 @@ $ /opt/homebrew/opt/llvm/bin/clang # ...
 Hello world:
 
 ```c
-#include "rusto.h"
+#include "wotto.h"
 
-RustoFunction(hello)
+WottoFunction(hello)
 {
     output("hello world!", 12);
 }
 ```
 
-Commands are implemented as functions defined with the `RustoFunction` macro.
+Commands are implemented as functions defined with the `WottoFunction` macro.
 The name specified here defines both the function name and the export name.
 
 The function doesn't take any argument and doesn't have a return value.
@@ -75,7 +75,7 @@ unsigned int input(u8 *buf, int len);
 void output(const u8 *buf, int len);
 ```
 
-TODO: include documentation. Refer to [`rusto.h`](rusto.h) for now.
+TODO: include documentation. Refer to [`wotto.h`](wotto.h) for now.
 
 
 ## Compiling
@@ -90,7 +90,7 @@ $ path/to/clang --target=wasm32 -mbulk-memory \
 ```
 
 If compilation is successful, clang will create a `hello.wasm` file. This is
-it, this is the WebAssembly module. You can load it into Rusto, and run the
+it, this is the WebAssembly module. You can load it into Wotto, and run the
 `hello` command you have defined. If you defined multiple commands, they will
 all be included in the same module.
 
@@ -142,7 +142,7 @@ will be useful at some point:
 
 * The usual optimization options, especially `-Os`, will be useful to reduce
   the binary size. This can be relevant if you want it to be loaded over the
-  network, and if Rusto ever enforces a size limit for modules (currently it
+  network, and if Wotto ever enforces a size limit for modules (currently it
   doesn't). For the same reason, you might want link-time optimization options,
   such as `-flto -Wl,--lto-O3`. Note that either might render debug information
   provided by `-g` useless
@@ -162,7 +162,7 @@ it doesn't work out of the box. This is expected to improve later on.
 The only obvious limitation is that you cannot _dynamically_ link other
 libraries, because of how WebAssembly works. Something akin to dynamic
 libraries would be possible in theory. But it's not included in the current
-Rusto runtime design. It might be in the future.
+Wotto runtime design. It might be in the future.
 
 Static libraries and source code libraries are fine in principle, but might not
 fit well if they expect a working libc.
@@ -188,7 +188,7 @@ Static data is in fact a very effective way to make sure you have your space
 usage under control. Remember that the runtime can enforce a hard limit on
 memory usage.
 
-In the future Rusto will provide a more explicit memory API. Before that, it's
+In the future Wotto will provide a more explicit memory API. Before that, it's
 worth noting that WebAssembly comes with native instructions to query the size
 of the linear memory space, and to request it to grow. These instructions are
 exposed as clang intrinsics which you might use:
@@ -210,7 +210,7 @@ Any address in the linear memory can be accessed both for read and write.
 
 Testing support is not complete. Different approaches are possible:
 
-* Compile for a native platform using `rusto.c` as stub. Check the included
+* Compile for a native platform using `wotto.c` as stub. Check the included
   example for a preliminary form of this.
 
 * Design a test interface and use rustico-cli to run wasm tests. Still in idea
