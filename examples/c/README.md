@@ -213,7 +213,7 @@ Testing support is not complete. Different approaches are possible:
 * Compile for a native platform using `wotto.c` as stub. Check the included
   example for a preliminary form of this.
 
-* Design a test interface and use rustico-cli to run wasm tests. Still in idea
+* Design a test interface and use wotto-cli to run wasm tests. Still in idea
   stage.
 
 * Same as above, but use the web platform to provide richer interaction. Again,

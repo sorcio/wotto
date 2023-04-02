@@ -1,10 +1,10 @@
 [package]
-name = "rustico"
+name = "wotto-engine"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "rustico"
+name = "wotto_engine"
 
 [dependencies]
 anyhow = "1.0.70"

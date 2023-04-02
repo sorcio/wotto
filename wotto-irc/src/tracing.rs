@@ -76,7 +76,7 @@ layer_features! {
         use tracing_subscriber::prelude::*;
         use tracing_subscriber::EnvFilter;
         let default = if cfg!(debug_assertions) {
-            "wotto=trace,rustico=trace,warn"
+            "wotto=trace,wotto-engine=trace,warn"
         } else {
             "warn"
         };

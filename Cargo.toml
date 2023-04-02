@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "rustico",
+    "wotto-engine",
     "wotto-irc",
-    "rustico-cli",
+    "wotto-cli",
     "wotto-utils",
 ]
 

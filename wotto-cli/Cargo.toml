@@ -1,13 +1,13 @@
 [package]
-name = "rustico-cli"
+name = "wotto-cli"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "rustico"
+name = "wotto-repl"
 path = "src/main.rs"
 
 [dependencies]
-rustico = { path = "../rustico", features = ["repl"] }
+wotto-engine = { path = "../wotto-engine", features = ["repl"] }
 anyhow = "1.0"
 tokio = "*"

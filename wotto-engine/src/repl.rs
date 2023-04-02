@@ -7,7 +7,7 @@ use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
 use tokio::sync::mpsc;
 
-use crate::service::{Command, Result as RusticoResult, Service};
+use crate::service::{Command, Result as EngineResult, Service};
 
 pub async fn repl() -> Result<()> {
     let svc = Arc::new(Service::new());
@@ -22,11 +22,11 @@ pub async fn repl() -> Result<()> {
     });
 
     std::thread::spawn({
-        let rustico = Arc::downgrade(&svc);
+        let service = Arc::downgrade(&svc);
         move || {
-            while let Some(rustico) = rustico.upgrade() {
+            while let Some(service) = service.upgrade() {
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                rustico.increment_epoch();
+                service.increment_epoch();
             }
             eprintln!("epoch increment stopping");
         }
@@ -40,7 +40,7 @@ pub async fn repl() -> Result<()> {
             .unwrap()
     })?;
 
-    println!("Shutting down rustico service...");
+    println!("Shutting down wotto service...");
     let _ = req_tx.send(Command::Quit).await;
     resp_rx.close();
     while let Some(msg) = resp_rx.recv().await {
@@ -51,11 +51,11 @@ pub async fn repl() -> Result<()> {
 }
 
 type ReqTx = mpsc::Sender<Command>;
-type RespRx = mpsc::Receiver<RusticoResult<String>>;
+type RespRx = mpsc::Receiver<EngineResult<String>>;
 
 fn command_parser(tx: ReqTx, mut resp: RespRx) -> Result<(ReqTx, RespRx)> {
     println!(
-        "rustico CLI {}",
+        "wotto-repl {}",
         option_env!("CARGO_PKG_VERSION").unwrap_or("dev")
     );
     let mut rl = DefaultEditor::new()?;

@@ -12,12 +12,12 @@ use crate::parsing;
 pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load("wotto.toml")?;
 
-    let rustico = rustico::Service::new();
+    let engine = wotto_engine::Service::new();
 
     let futures = {
         let mut futures = vec![];
 
-        let state = Arc::new(BotState::new(config, rustico));
+        let state = Arc::new(BotState::new(config, engine));
 
         let web_task = tokio::spawn({
             let state = Arc::downgrade(&state);
@@ -40,8 +40,8 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
         // state must have zero strong references at this point
         #[cfg(debug_assertions)]
         {
-            use wotto_utils::debug::debug_arc;
             use tracing::debug;
+            use wotto_utils::debug::debug_arc;
             debug!("irc state: {}", debug_arc(&state));
         }
 
@@ -192,7 +192,7 @@ mod state {
     pub(crate) struct BotState {
         config: Config,
         client: RwLock<Option<Client>>,
-        rustico: rustico::Service,
+        engine: wotto_engine::Service,
         trusted: RwLock<TrustedUsers>,
         throttler: Throttler,
         engine_semaphore: Semaphore,
@@ -202,7 +202,7 @@ mod state {
     }
 
     impl BotState {
-        pub(crate) fn new(config: Config, rustico: rustico::Service) -> Self {
+        pub(crate) fn new(config: Config, engine: wotto_engine::Service) -> Self {
             let throttler = Throttler::make()
                 .layer(5, 2500)
                 .layer(2, 150)
@@ -213,7 +213,7 @@ mod state {
             Self {
                 config,
                 client: RwLock::new(None),
-                rustico,
+                engine,
                 trusted: RwLock::new(trusted),
                 throttler,
                 engine_semaphore,
@@ -233,8 +233,8 @@ mod state {
             }
         }
 
-        pub(crate) fn rustico(&self) -> &rustico::Service {
-            &self.rustico
+        pub(crate) fn engine(&self) -> &wotto_engine::Service {
+            &self.engine
         }
 
         pub(crate) async fn management_command(
@@ -293,9 +293,9 @@ mod state {
                     let state = slf.clone();
                     tokio::spawn(async move {
                         let load_result = if module_name.trim().starts_with("https://") {
-                            state.rustico().load_module_from_url(&module_name).await
+                            state.engine().load_module_from_url(&module_name).await
                         } else {
-                            state.rustico().load_module(module_name.clone()).await
+                            state.engine().load_module(module_name.clone()).await
                         };
                         let response = match load_result {
                             Ok(name) => format!("loaded module: {name}"),
@@ -397,12 +397,12 @@ mod state {
         pub(crate) fn engine_epoch_timer(self: &Arc<Self>) -> impl core::future::Future {
             let weak = Arc::downgrade(&self.clone());
             struct ServiceRef(Arc<BotState>);
-            impl AsRef<rustico::Service> for ServiceRef {
-                fn as_ref(&self) -> &rustico::Service {
-                    &self.0.rustico
+            impl AsRef<wotto_engine::Service> for ServiceRef {
+                fn as_ref(&self) -> &wotto_engine::Service {
+                    &self.0.engine
                 }
             }
-            rustico::Service::epoch_timer(move || weak.upgrade().map(ServiceRef))
+            wotto_engine::Service::epoch_timer(move || weak.upgrade().map(ServiceRef))
         }
 
         pub(crate) async fn irc_task(self: Arc<Self>) -> Result<(), irc::error::Error> {
@@ -581,12 +581,12 @@ fn handle_command<F, Fut>(
         .spawn(async move {
             let Ok(permit) = state.engine_permit().await else { return; };
             match state
-                .rustico()
+                .engine()
                 .run_module(&module_name, &entry_point, &args)
                 .await
             {
                 Ok(s) => handler(s).await,
-                Err(rustico::Error::TimedOut) => {
+                Err(wotto_engine::Error::TimedOut) => {
                     // TODO irc code shouldn't be mixed here I think
                     state
                         .reply(
@@ -658,7 +658,7 @@ async fn web_server(state: std::sync::Weak<BotState>) {
                 let state = state.clone();
                 async move {
                     let Some(state) = state.upgrade() else { return; };
-                    match state.rustico().load_module(module.clone()).await {
+                    match state.engine().load_module(module.clone()).await {
                         Ok(_) => info!(module, "loaded module"),
                         Err(err) => error!(module, %err, "cannot load module"),
                     };

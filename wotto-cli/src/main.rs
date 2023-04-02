@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rustico::repl;
+use wotto_engine::repl;
 
 #[tokio::main]
 async fn main() -> Result<()> {
