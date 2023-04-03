@@ -195,7 +195,7 @@ pub struct Service {
     engine: Engine,
     modules: Mutex<HashMap<FullyQualifiedName, Module>>,
     linker: Linker<RuntimeData>,
-    registry: Registry<FullyQualifiedName>,
+    registry: Registry<FullyQualifiedName, ResolvedModule>,
     epoch_timer: Arc<EpochTimer>,
 }
 
