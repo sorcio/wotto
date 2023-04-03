@@ -56,6 +56,11 @@ impl<V> RegistryEntry<V> {
     async fn read(&self) -> impl Drop + '_ {
         self.value.read().await
     }
+
+    async fn take(&self) -> Option<V> {
+        let mut guard = self.value.write().await;
+        guard.take()
+    }
 }
 
 impl<V> From<V> for RegistryEntry<V> {
@@ -110,6 +115,14 @@ where
         if let Some(entry) = self.entry(key).await {
             entry.read().await;
         }
+    }
+
+    pub(crate) async fn take_entry<Q>(&self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.entries.lock().await.get_mut(key)?.take().await
     }
 }
 

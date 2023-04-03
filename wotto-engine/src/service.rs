@@ -328,6 +328,16 @@ impl Service {
     }
 
     #[tracing::instrument(skip(self))]
+    pub async fn unload_module(&self, name: &str) -> Result<String> {
+        let key = FullyQualifiedNameBorrow::from_str(name)?;
+        self.registry
+            .take_entry(key)
+            .await
+            .ok_or(Error::ModuleNotFound)?;
+        Ok(key.to_string())
+    }
+
+    #[tracing::instrument(skip(self))]
     async fn load_web_module(
         &self,
         fqn: FullyQualifiedName,
