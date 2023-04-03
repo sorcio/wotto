@@ -102,11 +102,11 @@ impl Display for CanonicalName<'_> {
 /// Identifier for a webmodule
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 #[repr(transparent)]
-struct FullyQualifiedName {
+struct FullyQualifiedNameBuf {
     fqn: String,
 }
 
-impl FullyQualifiedName {
+impl FullyQualifiedNameBuf {
     fn new(domain: webload::Domain, canonical_name: CanonicalName, user: &str) -> Self {
         let fqn = match domain {
             Domain::Github => format!("{user}/{canonical_name}"),
@@ -124,34 +124,34 @@ impl FullyQualifiedName {
     }
 }
 
-impl core::ops::Deref for FullyQualifiedName {
-    type Target = FullyQualifiedNameBorrow;
+impl core::ops::Deref for FullyQualifiedNameBuf {
+    type Target = FullyQualifiedName;
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        unsafe { FullyQualifiedNameBorrow::from_str_unchecked(&self.fqn) }
+        unsafe { FullyQualifiedName::from_str_unchecked(&self.fqn) }
     }
 }
 
-impl Display for FullyQualifiedName {
+impl Display for FullyQualifiedNameBuf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.fqn)
     }
 }
 
-impl Borrow<FullyQualifiedNameBorrow> for FullyQualifiedName {
-    fn borrow(&self) -> &FullyQualifiedNameBorrow {
+impl Borrow<FullyQualifiedName> for FullyQualifiedNameBuf {
+    fn borrow(&self) -> &FullyQualifiedName {
         self
     }
 }
 
 #[derive(Debug, Hash, PartialEq, Eq)]
 #[repr(transparent)]
-struct FullyQualifiedNameBorrow {
+struct FullyQualifiedName {
     fqn: str,
 }
 
-impl FullyQualifiedNameBorrow {
+impl FullyQualifiedName {
     fn from_str(s: &str) -> Result<&Self> {
         let _domain = if let Some((ns, _name)) = s.rsplit_once('/') {
             if let Some((_, _domain_name)) = ns.split_once('@') {
@@ -175,17 +175,17 @@ impl FullyQualifiedNameBorrow {
     }
 }
 
-impl ToOwned for FullyQualifiedNameBorrow {
-    type Owned = FullyQualifiedName;
+impl ToOwned for FullyQualifiedName {
+    type Owned = FullyQualifiedNameBuf;
 
     fn to_owned(&self) -> Self::Owned {
-        FullyQualifiedName {
+        FullyQualifiedNameBuf {
             fqn: self.fqn.to_owned(),
         }
     }
 }
 
-impl Display for FullyQualifiedNameBorrow {
+impl Display for FullyQualifiedName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.fqn)
     }
@@ -193,9 +193,9 @@ impl Display for FullyQualifiedNameBorrow {
 
 pub struct Service {
     engine: Engine,
-    modules: Mutex<HashMap<FullyQualifiedName, Module>>,
+    modules: Mutex<HashMap<FullyQualifiedNameBuf, Module>>,
     linker: Linker<RuntimeData>,
-    registry: Registry<FullyQualifiedName, ResolvedModule>,
+    registry: Registry<FullyQualifiedNameBuf, ResolvedModule>,
     epoch_timer: Arc<EpochTimer>,
 }
 
@@ -272,14 +272,14 @@ impl Service {
         }
     }
 
-    async fn add_module(&self, fqn: FullyQualifiedName, module: Module) {
+    async fn add_module(&self, fqn: FullyQualifiedNameBuf, module: Module) {
         let mut modules = self.modules.lock().await;
         modules.insert(fqn, module);
     }
 
     #[tracing::instrument(skip(self))]
     pub async fn load_module(&self, name: String) -> Result<String> {
-        let key = FullyQualifiedNameBorrow::from_str(&name)?;
+        let key = FullyQualifiedName::from_str(&name)?;
         let mut entry = self.registry.lock_entry_mut(key.to_owned()).await;
         if let Some(webmodule) = &mut *entry {
             let url = webmodule.url().clone();
@@ -309,7 +309,7 @@ impl Service {
         // "builtin" modules have a short fqn with no namespace or prefix
         // TODO: unify the builtin and web code paths
         let canonical_name = CanonicalName::try_from(&path)?;
-        let fqn = FullyQualifiedName::new_builtin(canonical_name);
+        let fqn = FullyQualifiedNameBuf::new_builtin(canonical_name);
         let module = Module::from_file(&self.engine, &path).map_err(Error::Wasm)?;
         self.add_module(fqn.clone(), module).await;
         Ok(fqn.to_string())
@@ -322,14 +322,14 @@ impl Service {
         // the content might or might not be loaded at this point, but we have
         // enough information to determine the name of the module
         let canonical_name = CanonicalName::try_from(webmodule.name())?;
-        let fqn = FullyQualifiedName::new(webmodule.domain(), canonical_name, webmodule.user());
+        let fqn = FullyQualifiedNameBuf::new(webmodule.domain(), canonical_name, webmodule.user());
         self.load_web_module(fqn.clone(), webmodule).await?;
         Ok(fqn.to_string())
     }
 
     #[tracing::instrument(skip(self))]
     pub async fn unload_module(&self, name: &str) -> Result<String> {
-        let key = FullyQualifiedNameBorrow::from_str(name)?;
+        let key = FullyQualifiedName::from_str(name)?;
         self.registry
             .take_entry(key)
             .await
@@ -340,7 +340,7 @@ impl Service {
     #[tracing::instrument(skip(self))]
     async fn load_web_module(
         &self,
-        fqn: FullyQualifiedName,
+        fqn: FullyQualifiedNameBuf,
         webmodule: ResolvedModule,
     ) -> Result<()> {
         let mut entry = self.registry.lock_entry_mut(fqn.clone()).await;
@@ -351,7 +351,7 @@ impl Service {
     async fn load_web_module_with_lock<'a>(
         &'a self,
         entry: &'a mut Option<ResolvedModule>,
-        fqn: &FullyQualifiedNameBorrow,
+        fqn: &FullyQualifiedName,
         mut webmodule: ResolvedModule,
     ) -> Result<()> {
         webmodule.ensure_content().await?;
@@ -388,7 +388,7 @@ impl Service {
         args: &str,
     ) -> Result<String> {
         // If module is being reloaded, wait until new code is available
-        let key = FullyQualifiedNameBorrow::from_str(module_name)?;
+        let key = FullyQualifiedName::from_str(module_name)?;
         self.registry.wait_entry(key).await;
         let module = {
             let modules = self.modules.lock().await;
