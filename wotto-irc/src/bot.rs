@@ -307,6 +307,24 @@ mod state {
                         state.reply(response_target, response).await;
                     });
                 }
+                CommandName::Plain(x) if x == "unload" => {
+                    if !check_trust(&slf, source).await {
+                        return;
+                    }
+                    let module_name = cmd.args.trim().to_string();
+                    let state = slf.clone();
+                    tokio::spawn(async move {
+                        let result = state.engine().unload_module(&module_name).await;
+                        let response = match result {
+                            Ok(name) => format!("unloaded module: {name}"),
+                            Err(error) => {
+                                error!(err = %error, module_name, "cannot unload module");
+                                "cannot unload module (check logs)".to_string()
+                            }
+                        };
+                        state.reply(response_target, response).await;
+                    });
+                }
                 CommandName::Plain(x) if x == "permits" => {
                     if !check_trust(&slf, source).await {
                         return;
