@@ -58,12 +58,12 @@ where
 
     /// Wait until no writers are touching the entry, if it exists; otherwise
     /// return immediately.
-    pub(crate) async fn wait_entry<Q>(&self, key: &Q)
+    pub(crate) async fn wait_entry<Q>(&self, key: &Q) -> Option<ValueRef<V>>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.entry(key).await;
+        self.entry(key).await
     }
 
     pub(crate) async fn take_entry<Q>(&self, key: &Q) -> Option<V>

@@ -1,9 +1,8 @@
-use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
 use thiserror::Error;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tracing::info;
 use wasmtime::*;
 
@@ -55,11 +54,30 @@ pub enum Command {
     Idle,
 }
 
+struct WottoModule {
+    resolved: ResolvedModule,
+    code: Module,
+}
+
+impl WottoModule {
+    fn new(resolved: ResolvedModule, code: Module) -> Self {
+        Self { resolved, code }
+    }
+
+    fn resolved(&self) -> &ResolvedModule {
+        &self.resolved
+    }
+
+    fn code(&self) -> &Module {
+        &self.code
+    }
+}
+
 pub struct Service {
     engine: Engine,
-    modules: Mutex<HashMap<FullyQualifiedNameBuf, Module>>,
+    // modules: Mutex<HashMap<FullyQualifiedNameBuf, Module>>,
     linker: Linker<RuntimeData>,
-    registry: Registry<FullyQualifiedNameBuf, ResolvedModule>,
+    registry: Registry<FullyQualifiedNameBuf, WottoModule>,
     epoch_timer: Arc<EpochTimer>,
 }
 
@@ -85,7 +103,6 @@ impl Service {
 
         Service {
             engine,
-            modules: Mutex::default(),
             linker,
             registry: Registry::default(),
             epoch_timer: Arc::default(),
@@ -136,17 +153,12 @@ impl Service {
         }
     }
 
-    async fn add_module(&self, fqn: FullyQualifiedNameBuf, module: Module) {
-        let mut modules = self.modules.lock().await;
-        modules.insert(fqn, module);
-    }
-
     #[tracing::instrument(skip(self))]
     pub async fn load_module(&self, name: String) -> Result<String> {
         let key = FullyQualifiedName::from_str(&name)?;
         let mut entry = self.registry.lock_entry_mut(key.to_owned()).await;
         if let Some(webmodule) = &mut *entry {
-            let url = webmodule.url().clone();
+            let url = webmodule.resolved().url().clone();
             info!(module = name, %url, "reloading module");
             // TODO should we make explicit an distinction between the case
             // when the user requests re-resolution (e.g. same URL gives a
@@ -161,7 +173,7 @@ impl Service {
                 // mess with the registry state here.
                 return Err(Error::ModuleGone(name, url));
             }
-            self.load_web_module_with_lock(&mut entry, key, new_webmodule)
+            self.load_web_module_with_lock(&mut entry, new_webmodule)
                 .await?;
             return Ok(name);
         }
@@ -196,24 +208,22 @@ impl Service {
         fqn: FullyQualifiedNameBuf,
         webmodule: ResolvedModule,
     ) -> Result<()> {
-        let mut entry = self.registry.lock_entry_mut(fqn.clone()).await;
-        self.load_web_module_with_lock(&mut entry, &fqn, webmodule)
-            .await
+        let mut entry = self.registry.lock_entry_mut(fqn).await;
+        self.load_web_module_with_lock(&mut entry, webmodule).await
     }
 
     async fn load_web_module_with_lock<'a>(
         &'a self,
-        entry: &'a mut Option<ResolvedModule>,
-        fqn: &FullyQualifiedName,
+        entry: &'a mut Option<WottoModule>,
         mut webmodule: ResolvedModule,
     ) -> Result<()> {
         webmodule.ensure_content().await?;
         let bytes = webmodule
             .content()
             .expect("loaded module should already have content");
-        let wasm_module = Module::new(&self.engine, bytes).map_err(Error::Wasm)?;
-        self.add_module(fqn.to_owned(), wasm_module).await;
-        *entry = Some(webmodule);
+        let code = Module::new(&self.engine, bytes).map_err(Error::Wasm)?;
+        let module = WottoModule::new(webmodule, code);
+        *entry = Some(module);
         Ok(())
     }
 
@@ -226,10 +236,16 @@ impl Service {
     ) -> Result<String> {
         // If module is being reloaded, wait until new code is available
         let key = FullyQualifiedName::from_str(module_name)?;
-        self.registry.wait_entry(key).await;
+
         let module = {
-            let modules = self.modules.lock().await;
-            modules.get(key).ok_or(Error::ModuleNotFound)?.clone()
+            self.registry
+                .wait_entry(key)
+                .await
+                .ok_or(Error::ModuleNotFound)?
+                .as_ref()
+                .ok_or(Error::ModuleNotFound)?
+                .code()
+                .clone()
         };
 
         let runtime_data = RuntimeData::new(args.to_string(), 512);
