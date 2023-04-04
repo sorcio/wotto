@@ -1,6 +1,7 @@
 #![feature(pointer_is_aligned)]
 
 mod assemblyscript;
+mod names;
 mod registry;
 #[cfg(feature = "repl")]
 pub mod repl;
