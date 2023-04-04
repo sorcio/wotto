@@ -4,7 +4,6 @@ use std::fmt::Display;
 use std::future::Future;
 use std::hash::Hash;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::Arc;
 
 use thiserror::Error;
@@ -36,9 +35,9 @@ pub enum Error {
     InvalidPointer,
     #[error("execution timed out")]
     TimedOut,
-    #[error("invalid url ({0}")]
+    #[error("invalid url: {0}")]
     InvalidUrl(#[from] InvalidUrl),
-    #[error("error while fetching url ({0})")]
+    #[error("error while fetching url: {0}")]
     CannotFetch(#[from] WebError),
     #[error("module {0} previously at url {1} not found")]
     ModuleGone(String, url::Url),
@@ -116,11 +115,12 @@ impl FullyQualifiedNameBuf {
         Self { fqn }
     }
 
-    #[inline]
-    fn new_builtin(canonical_name: CanonicalName) -> Self {
-        Self {
-            fqn: canonical_name.0.to_string(),
-        }
+    fn for_module(module: &ResolvedModule) -> Result<Self> {
+        Ok(Self::new(
+            module.domain(),
+            module.name().try_into()?,
+            module.user(),
+        ))
     }
 }
 
@@ -188,6 +188,20 @@ impl ToOwned for FullyQualifiedName {
 impl Display for FullyQualifiedName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.fqn)
+    }
+}
+
+impl PartialEq<str> for FullyQualifiedName {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        PartialEq::eq(&self.fqn, other)
+    }
+}
+
+impl PartialEq<String> for FullyQualifiedName {
+    #[inline]
+    fn eq(&self, other: &String) -> bool {
+        PartialEq::eq(&self.fqn, other)
     }
 }
 
@@ -289,8 +303,8 @@ impl Service {
             // newer version) vs when we want to just attempt a reload?
             // unsure if the "just reload" case actually exists
             let new_webmodule = webload::resolve(url.clone()).await?;
-            let new_fqn = self.fqn_for_module(webmodule);
-            if new_fqn != name {
+            let new_fqn = FullyQualifiedNameBuf::for_module(&new_webmodule)?;
+            if *new_fqn != name {
                 // a given url used to provide a module name, but it
                 // doesn't anymore. the resolver is supposed to make sure
                 // this never happens, but let's make extra sure we don't
@@ -301,18 +315,7 @@ impl Service {
                 .await?;
             return Ok(name);
         }
-        // quick and dirty name validation + path loading
-        const MODULES_PATH: &str = "examples";
-        let name_as_path = PathBuf::from_str(&name).map_err(|_| Error::InvalidModuleName)?;
-        let file_name = name_as_path.file_name().ok_or(Error::InvalidModuleName)?;
-        let path = Path::new(MODULES_PATH).join(file_name);
-        // "builtin" modules have a short fqn with no namespace or prefix
-        // TODO: unify the builtin and web code paths
-        let canonical_name = CanonicalName::try_from(&path)?;
-        let fqn = FullyQualifiedNameBuf::new_builtin(canonical_name);
-        let module = Module::from_file(&self.engine, &path).map_err(Error::Wasm)?;
-        self.add_module(fqn.clone(), module).await;
-        Ok(fqn.to_string())
+        Err(Error::ModuleNotFound)
     }
 
     #[tracing::instrument(skip(self))]
@@ -362,22 +365,6 @@ impl Service {
         self.add_module(fqn.to_owned(), wasm_module).await;
         *entry = Some(webmodule);
         Ok(())
-    }
-
-    fn fqn_for_module(&self, webmodule: &ResolvedModule) -> String {
-        let canonical_name = canonicalize_name(webmodule.name()).unwrap();
-        let user = webmodule.user();
-        let namespace = match webmodule.domain() {
-            Domain::Github => Some(user.to_string()),
-            Domain::Builtin => None,
-            Domain::Other(domain) => Some(format!("{user}@{domain}")),
-        };
-
-        if let Some(namespace) = namespace {
-            format!("{namespace}/{canonical_name}")
-        } else {
-            canonical_name
-        }
     }
 
     #[tracing::instrument(skip(self))]
@@ -493,17 +480,6 @@ pub(crate) fn get_memory<T>(caller: &mut Caller<'_, T>) -> Result<Memory> {
         .into_memory()
         .ok_or(Error::MemoryNotExported)?;
     Ok(mem)
-}
-
-fn canonicalize_name<P: AsRef<Path>>(path: P) -> Result<String> {
-    Ok(path
-        .as_ref()
-        .with_extension("")
-        .file_name()
-        .unwrap()
-        .to_str()
-        .ok_or(Error::InvalidModuleName)?
-        .to_string())
 }
 
 mod utils {

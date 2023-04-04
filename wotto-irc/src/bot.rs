@@ -292,7 +292,7 @@ mod state {
                     let module_name = cmd.args.trim().to_string();
                     let state = slf.clone();
                     tokio::spawn(async move {
-                        let load_result = if module_name.trim().starts_with("https://") {
+                        let load_result = if module_name.trim().contains(':') {
                             state.engine().load_module_from_url(&module_name).await
                         } else {
                             state.engine().load_module(module_name.clone()).await

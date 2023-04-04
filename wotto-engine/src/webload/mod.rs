@@ -1,7 +1,9 @@
+mod builtin;
 mod gist;
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use lazy_static::lazy_static;
 use thiserror::Error;
@@ -33,6 +35,10 @@ pub enum WebError {
     TooLarge,
     #[error("missing credentials")]
     NoCredentials,
+    #[error("I/O error")]
+    IoError(#[from] std::io::Error),
+    #[error("multiple errors: {0:?}")]
+    Multiple(Vec<(PathBuf, WebError)>),
 }
 
 trait ResolverResult {
@@ -96,27 +102,33 @@ impl core::fmt::Debug for ResolvedModule {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Loader {
     Gist,
+    Builtin,
 }
 
 impl Loader {
     fn from_url(url: &Url) -> Result<Self> {
-        ORIGIN_MAP
-            .get(&url.origin())
-            .ok_or(InvalidUrl::RejectedOrigin.into())
-            .copied()
+        match url.scheme() {
+            "https" => ORIGIN_MAP
+                .get(&url.origin())
+                .ok_or(InvalidUrl::RejectedOrigin.into())
+                .copied(),
+            "builtin" => Ok(Loader::Builtin),
+            _ => Err(InvalidUrl::RejectedOrigin.into()),
+        }
     }
 
     async fn resolve(self, url: Url) -> Result<ResolvedModule> {
         let resolved = match self {
             Loader::Gist => gist::resolve_gist(&url).await?,
+            Loader::Builtin => builtin::resolve_module(&url).await?,
         };
         Ok(ResolvedModule {
             loader: self,
             url,
-            resolved: Box::new(resolved),
+            resolved,
         })
     }
 
@@ -126,6 +138,7 @@ impl Loader {
         }
         match self {
             Loader::Gist => gist::load_content(module).await,
+            Loader::Builtin => builtin::load_content(module).await,
         }
     }
 }
@@ -151,7 +164,7 @@ lazy_static! {
     /// Internal (used by Loader)
     static ref ORIGIN_MAP: HashMap<Origin, Loader> = origin_map!{
         "https://gist.github.com/" => Loader::Gist,
-        "https://gist.githubusercontent.com/" => Loader::Gist
+        "https://gist.githubusercontent.com/" => Loader::Gist,
     };
 }
 
@@ -162,7 +175,6 @@ lazy_static! {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Domain {
     Github,
-    #[allow(dead_code)]
     Builtin,
     #[allow(dead_code)]
     Other(&'static str),
@@ -171,4 +183,40 @@ pub(crate) enum Domain {
 pub(crate) async fn resolve(url: Url) -> Result<ResolvedModule> {
     let loader = Loader::from_url(&url)?;
     loader.resolve(url).await
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::webload::InvalidUrl;
+    use crate::Error;
+
+    use super::Loader;
+
+    #[test]
+    fn printa_e_vedi() {
+        println!("{:?}", url::Url::parse("builtin:bar/foo.wasm"));
+        println!("{:?}", url::Url::parse("builtin:foo.wasm"));
+        println!("{:?}", url::Url::parse("builtin:").unwrap().origin());
+    }
+
+    #[test]
+    fn test_loader() {
+        assert_eq!(
+            Loader::from_url(&"https://gist.github.com/aa".parse().unwrap()).unwrap(),
+            Loader::Gist
+        );
+        assert_eq!(
+            Loader::from_url(&"https://gist.githubusercontent.com/".parse().unwrap()).unwrap(),
+            Loader::Gist
+        );
+        assert_eq!(
+            Loader::from_url(&"builtin:".parse().unwrap()).unwrap(),
+            Loader::Builtin
+        );
+
+        assert!(matches!(
+            Loader::from_url(&"https://github.com/aa".parse().unwrap()),
+            Err(Error::InvalidUrl(InvalidUrl::RejectedOrigin))
+        ));
+    }
 }

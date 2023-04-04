@@ -289,7 +289,7 @@ fn client() -> Result<reqwest::Client> {
         .map_err(WebError::ReqwestError)?)
 }
 
-pub(super) async fn resolve_gist(url: &Url) -> Result<impl ResolverResult> {
+pub(super) async fn resolve_gist(url: &Url) -> Result<Box<dyn ResolverResult + Send + Sync>> {
     debug_assert_eq!(url.scheme(), "https");
     debug_assert!(matches!(
         url.host(),
@@ -321,7 +321,9 @@ pub(super) async fn resolve_gist(url: &Url) -> Result<impl ResolverResult> {
         .await
         .map_err(WebError::ReqwestError)?;
 
-    extract_gist_from_json(json, gist).ok_or(WebError::NotWasm.into())
+    Ok(Box::new(
+        extract_gist_from_json(json, gist).ok_or(WebError::NotWasm)?,
+    ))
 }
 
 pub(crate) async fn load_content(module: &mut ResolvedModule) -> Result<()> {
