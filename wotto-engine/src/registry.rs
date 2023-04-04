@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
-use tokio::sync::{Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
+use parking_lot::Mutex;
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 pub(crate) type RegistryEntry<V> = Arc<RwLock<Option<V>>>;
 pub(crate) type ValueRef<V> = OwnedRwLockReadGuard<Option<V>>;
@@ -18,8 +19,12 @@ where
     K: Hash + Eq,
 {
     async fn entry_or_default(&self, key: K) -> ValueRefMut<V> {
-        let mut map = self.entries.lock().await;
-        let entry = map.entry(key).or_insert_with(RegistryEntry::default).clone();
+        let entry = {
+            let mut map = self.entries.lock();
+            map.entry(key)
+                .or_insert_with(RegistryEntry::default)
+                .clone()
+        };
         entry.write_owned().await
     }
 
@@ -28,8 +33,10 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let map = self.entries.lock().await;
-        let entry = map.get(key)?.clone();
+        let entry = {
+            let map = self.entries.lock();
+            map.get(key)?.clone()
+        };
         Some(entry.read_owned().await)
     }
 
@@ -38,8 +45,10 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let map = self.entries.lock().await;
-        let entry = map.get(key)?.clone();
+        let entry = {
+            let map = self.entries.lock();
+            map.get(key)?.clone()
+        };
         Some(entry.write_owned().await)
     }
 
