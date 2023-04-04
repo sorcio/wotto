@@ -5,84 +5,9 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
-/// Reference to a registered entry value. Holds a write guard.
-/// Currently just a wrapper around RwLockWriteGuard, so maybe can be removed
-/// later; or maybe it will be useful to implement entry drop/deletion.
-pub(crate) struct ValueRefMut<V> {
-    inner: OwnedRwLockWriteGuard<Option<V>>,
-}
-
-impl<V> ValueRefMut<V> {
-    fn new(inner: OwnedRwLockWriteGuard<Option<V>>) -> Self {
-        Self { inner }
-    }
-}
-
-impl<V> std::ops::Deref for ValueRefMut<V> {
-    type Target = Option<V>;
-
-    fn deref(&self) -> &Self::Target {
-        self.inner.deref()
-    }
-}
-
-impl<V> std::ops::DerefMut for ValueRefMut<V> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.inner.deref_mut()
-    }
-}
-
-pub(crate) struct ValueRef<V> {
-    inner: OwnedRwLockReadGuard<Option<V>>,
-}
-
-impl<V> ValueRef<V> {
-    fn new(inner: OwnedRwLockReadGuard<Option<V>>) -> Self {
-        Self { inner }
-    }
-}
-
-impl<V> std::ops::Deref for ValueRef<V> {
-    type Target = Option<V>;
-
-    fn deref(&self) -> &Self::Target {
-        self.inner.deref()
-    }
-}
-
-struct RegistryEntry<V> {
-    value: Arc<RwLock<Option<V>>>,
-}
-
-impl<V> RegistryEntry<V> {
-    fn with_value(value: V) -> Self {
-        Self {
-            value: Arc::new(RwLock::new(Some(value))),
-        }
-    }
-
-    fn empty() -> Self {
-        Self {
-            value: Arc::default(),
-        }
-    }
-
-    async fn write(&self) -> ValueRefMut<V> {
-        let guard = self.value.clone().write_owned().await;
-        ValueRefMut::new(guard)
-    }
-
-    async fn read(&self) -> ValueRef<V> {
-        let guard = self.value.clone().read_owned().await;
-        ValueRef::new(guard)
-    }
-}
-
-impl<V> From<V> for RegistryEntry<V> {
-    fn from(value: V) -> Self {
-        Self::with_value(value)
-    }
-}
+pub(crate) type RegistryEntry<V> = Arc<RwLock<Option<V>>>;
+pub(crate) type ValueRef<V> = OwnedRwLockReadGuard<Option<V>>;
+pub(crate) type ValueRefMut<V> = OwnedRwLockWriteGuard<Option<V>>;
 
 pub(crate) struct Registry<K, V> {
     entries: Mutex<HashMap<K, RegistryEntry<V>>>,
@@ -94,8 +19,8 @@ where
 {
     async fn entry_or_default(&self, key: K) -> ValueRefMut<V> {
         let mut map = self.entries.lock().await;
-        let entry = map.entry(key).or_insert_with(RegistryEntry::empty);
-        entry.write().await
+        let entry = map.entry(key).or_insert_with(RegistryEntry::default).clone();
+        entry.write_owned().await
     }
 
     async fn entry<Q>(&self, key: &Q) -> Option<ValueRef<V>>
@@ -104,8 +29,8 @@ where
         Q: Hash + Eq + ?Sized,
     {
         let map = self.entries.lock().await;
-        let entry = map.get(key)?;
-        Some(entry.read().await)
+        let entry = map.get(key)?.clone();
+        Some(entry.read_owned().await)
     }
 
     async fn entry_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<V>>
@@ -114,8 +39,8 @@ where
         Q: Hash + Eq + ?Sized,
     {
         let map = self.entries.lock().await;
-        let entry = map.get(key)?;
-        Some(entry.write().await)
+        let entry = map.get(key)?.clone();
+        Some(entry.write_owned().await)
     }
 
     pub(crate) async fn lock_entry_mut(&self, key: K) -> ValueRefMut<V> {
