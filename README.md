@@ -106,6 +106,13 @@ not well defined and there are some heavy limitations.
 The `examples/c` directory includes a toy example implemented in C. The
 included [documentation](examples/c/README.md) gives some more details.
 
+## The `irc/` subdirectory
+
+The `irc/` subdirectory contains a copy of the tree from the
+[irc](https://github.com/aatxe/irc) crate repository. I applied only a minimal
+amount of changes. Check the source repository, and the [README](irc/README.md)
+and [LICENSE](irc/LICENSE.md) files for more information and licensing details.
+
 ## Contributing
 
 As mentioned above, wotto is not following any design and doesn't have a
@@ -118,4 +125,6 @@ when interacting on any project space.
 
 ## License
 
-This repository is available under the terms of the [MIT license](LICENSE).
+This repository is available under the terms of the [MIT license](LICENSE),
+with the exception of the files under the `irc/` directory, which are part of a
+[separate project](#the-irc-subdirectory) distributed under the original terms.
