@@ -3327,6 +3327,7 @@ name = "wotto-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "itertools",
  "lazy_static",
  "parking_lot 0.12.1",

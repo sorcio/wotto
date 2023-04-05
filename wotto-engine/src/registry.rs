@@ -1,5 +1,6 @@
 use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::future::Future;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -18,17 +19,17 @@ impl<K, V> Registry<K, V>
 where
     K: Hash + Eq,
 {
-    async fn entry_or_default(&self, key: K) -> ValueRefMut<V> {
+    fn entry_or_default(&self, key: K) -> impl Future<Output = ValueRefMut<V>> {
         let entry = {
             let mut map = self.entries.lock();
             map.entry(key)
                 .or_insert_with(RegistryEntry::default)
                 .clone()
         };
-        entry.write_owned().await
+        entry.write_owned()
     }
 
-    async fn entry<Q>(&self, key: &Q) -> Option<ValueRef<V>>
+    fn entry<Q>(&self, key: &Q) -> Option<impl Future<Output = ValueRef<V>>>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -37,33 +38,21 @@ where
             let map = self.entries.lock();
             map.get(key)?.clone()
         };
-        Some(entry.read_owned().await)
+        Some(entry.read_owned())
     }
 
-    // async fn entry_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<V>>
-    // where
-    //     K: Borrow<Q>,
-    //     Q: Hash + Eq + ?Sized,
-    // {
-    //     let entry = {
-    //         let map = self.entries.lock();
-    //         map.get(key)?.clone()
-    //     };
-    //     Some(entry.write_owned().await)
-    // }
-
-    pub(crate) async fn lock_entry_mut(&self, key: K) -> ValueRefMut<V> {
-        self.entry_or_default(key).await
+    pub(crate) fn lock_entry_mut(&self, key: K) -> impl Future<Output = ValueRefMut<V>> {
+        self.entry_or_default(key)
     }
 
     /// Wait until no writers are touching the entry, if it exists; otherwise
     /// return immediately.
-    pub(crate) async fn wait_entry<Q>(&self, key: &Q) -> Option<ValueRef<V>>
+    pub(crate) fn wait_entry<Q>(&self, key: &Q) -> Option<impl Future<Output = ValueRef<V>>>
     where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.entry(key).await
+        self.entry(key)
     }
 
     pub(crate) async fn take_entry<Q>(&self, key: &Q) -> Option<V>
@@ -95,7 +84,6 @@ impl<K, V> Default for Registry<K, V> {
 #[cfg(test)]
 mod tests {
     use std::future::Future;
-    use std::time::Duration;
 
     use super::*;
 
@@ -139,6 +127,19 @@ mod tests {
         let entry = block_on(async { m.lock_entry_mut("hello".to_owned()).await });
         assert!(entry.is_none());
     }
+
+    #[test]
+    fn test_contains_key() {
+        let m = R::default();
+        assert!(!m.contains_key("foo"));
+        block_on(async {
+            *m.lock_entry_mut("foo".to_string()).await = Some(100);
+        });
+        assert!(m.contains_key("foo"));
+        let _ = block_on(async { m.take_entry("foo").await });
+        assert!(!m.contains_key("foo"));
+    }
+
     #[test]
     fn test_grow() {
         // Inserting many entries. This tests a case that used to trigger bad
@@ -167,19 +168,31 @@ mod tests {
 
     #[test]
     fn test_wait() {
+        use futures::future::FutureExt;
+
         let m = R::default();
+
+        assert!(
+            m.wait_entry("key").is_none(),
+            "wait_entry must return immediately when entry does not exist"
+        );
+
         block_on(async {
-            tokio::time::timeout(Duration::from_millis(1), m.wait_entry("key"))
-                .await
-                .expect("wait_entry must return immediately when entry does not exist");
             let entry = m.lock_entry_mut("key".to_owned()).await;
-            tokio::time::timeout(Duration::from_millis(10), m.wait_entry("key"))
-                .await
-                .expect_err("wait_entry must block when an entry is locked");
+
+            assert!(m
+                .wait_entry("key")
+                .expect("wait_entry must return a future when an entry is locked")
+                .now_or_never()
+                .is_none());
+
             std::mem::drop(entry);
-            tokio::time::timeout(Duration::from_millis(1), m.wait_entry("key"))
-                .await
-                .expect("wait_entry must return immediately when entry is not locked");
+
+            let _ = m
+                .wait_entry("key")
+                .expect("wait_entry must return a future when an entry exists")
+                .now_or_never()
+                .expect("wait_entry must poll instantly when entry is not locked");
         });
     }
 

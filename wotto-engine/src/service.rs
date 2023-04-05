@@ -272,8 +272,8 @@ impl Service {
         let module = {
             self.registry
                 .wait_entry(&key)
-                .await
                 .ok_or(Error::ModuleNotFound)?
+                .await
                 .as_ref()
                 .ok_or(Error::ModuleNotFound)?
                 .code()

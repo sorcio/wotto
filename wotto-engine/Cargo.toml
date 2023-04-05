@@ -22,3 +22,6 @@ parking_lot = "*"
 
 [features]
 repl = ["rustyline"]
+
+[dev-dependencies]
+futures = "*"
