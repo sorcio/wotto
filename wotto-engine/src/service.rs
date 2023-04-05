@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -75,10 +77,10 @@ impl WottoModule {
 
 pub struct Service {
     engine: Engine,
-    // modules: Mutex<HashMap<FullyQualifiedNameBuf, Module>>,
     linker: Linker<RuntimeData>,
     registry: Registry<FullyQualifiedNameBuf, WottoModule>,
     epoch_timer: Arc<EpochTimer>,
+    aliases: Mutex<AliasBook>,
 }
 
 fn make_engine() -> Engine {
@@ -106,6 +108,7 @@ impl Service {
             linker,
             registry: Registry::default(),
             epoch_timer: Arc::default(),
+            aliases: Mutex::default(),
         }
     }
 
@@ -151,6 +154,28 @@ impl Service {
                 break;
             };
         }
+    }
+
+    pub fn add_alias(&self, alias: &str, refers_to: &str) -> Result<()> {
+        let refers_to = if let Ok(fqn) = FullyQualifiedName::from_str(refers_to) {
+            if self.registry.contains_key(fqn) || self.aliases.lock().has(refers_to) {
+                fqn
+            } else {
+                return Err(Error::ModuleNotFound);
+            }
+        } else {
+            return Err(Error::InvalidModuleName);
+        };
+        self.aliases.lock().add(alias.try_into()?, refers_to);
+        Ok(())
+    }
+
+    pub fn remove_alias(&self, alias: &str) -> Result<String> {
+        self.aliases
+            .lock()
+            .remove(alias.try_into()?)
+            .ok_or(Error::ModuleNotFound)
+            .map(|fqn| fqn.to_string())
     }
 
     #[tracing::instrument(skip(self))]
@@ -199,6 +224,7 @@ impl Service {
             .take_entry(key)
             .await
             .ok_or(Error::ModuleNotFound)?;
+        self.aliases.lock().remove_target(key);
         Ok(key.to_string())
     }
 
@@ -235,11 +261,17 @@ impl Service {
         args: &str,
     ) -> Result<String> {
         // If module is being reloaded, wait until new code is available
-        let key = FullyQualifiedName::from_str(module_name)?;
+        let key = {
+            let aliases = self.aliases.lock();
+            aliases
+                .resolve(CanonicalName::try_from(module_name)?)
+                .map_or_else(|| FullyQualifiedName::from_str(module_name), Ok)?
+                .to_owned()
+        };
 
         let module = {
             self.registry
-                .wait_entry(key)
+                .wait_entry(&key)
                 .await
                 .ok_or(Error::ModuleNotFound)?
                 .as_ref()
@@ -396,5 +428,102 @@ mod utils {
         fn drop(&mut self) {
             self.0.decrement();
         }
+    }
+}
+
+#[derive(Debug, Default)]
+struct AliasBook {
+    entries: HashMap<String, FullyQualifiedNameBuf>,
+    reverse: HashMap<FullyQualifiedNameBuf, Vec<String>>,
+}
+
+impl AliasBook {
+    fn add(&mut self, alias: CanonicalName, refers_to: &FullyQualifiedName) {
+        self.entries.insert(alias.to_string(), refers_to.to_owned());
+        self.reverse
+            .entry(refers_to.to_owned())
+            .or_default()
+            .push(alias.to_string());
+    }
+
+    fn remove(&mut self, alias: CanonicalName) -> Option<FullyQualifiedNameBuf> {
+        let fqn = FullyQualifiedName::alias(alias);
+        self.remove_target(fqn);
+        self.entries.remove(alias.as_ref())
+    }
+
+    fn remove_target(&mut self, fqn: &FullyQualifiedName) {
+        let mut queue = vec![fqn.to_owned()];
+        while let Some(fqn) = queue.pop() {
+            if let Some(aliases) = self.reverse.remove(&fqn) {
+                for rev in aliases {
+                    if let Some(refers_to) = self.entries.remove(&rev) {
+                        queue.push(refers_to);
+                    }
+                }
+            }
+        }
+    }
+
+    fn resolve<S: AsRef<str>>(&self, alias: S) -> Option<&FullyQualifiedName> {
+        let mut resolution = None;
+        let mut alias = alias.as_ref();
+        while let Some(entry) = self.entries.get(alias) {
+            alias = entry.as_ref();
+            resolution = Some(std::ops::Deref::deref(entry));
+        }
+        resolution
+    }
+
+    fn has<S: AsRef<str>>(&self, alias: S) -> bool {
+        self.entries.contains_key(alias.as_ref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::names::{CanonicalName, FullyQualifiedName};
+
+    use super::AliasBook;
+
+    #[test]
+    fn test_alias_simple() {
+        let mut ab = AliasBook::default();
+        assert!(!ab.has("foo"));
+        assert!(ab.remove(CanonicalName::try_from("foo").unwrap()).is_none());
+        ab.add(
+            CanonicalName::try_from("foo").unwrap(),
+            FullyQualifiedName::from_str("user/foo").unwrap(),
+        );
+        assert!(ab.has("foo"));
+        assert_eq!(
+            ab.resolve("foo").unwrap(),
+            FullyQualifiedName::from_str("user/foo").unwrap()
+        );
+        assert_eq!(
+            ab.remove(CanonicalName::try_from("foo").unwrap()).unwrap(),
+            FullyQualifiedName::from_str("user/foo").unwrap().to_owned()
+        );
+        assert!(!ab.has("foo"));
+    }
+
+    #[test]
+    fn test_alias_chain() {
+        // foo -> bar -> baz
+        let foo = CanonicalName::try_from("foo").unwrap();
+        let bar = CanonicalName::try_from("bar").unwrap();
+        let baz = FullyQualifiedName::from_str("baz").unwrap();
+
+        let mut ab = AliasBook::default();
+        ab.add(bar, baz);
+        ab.add(foo, FullyQualifiedName::alias(bar));
+
+        assert_eq!(ab.resolve(foo).unwrap(), baz);
+        assert_eq!(ab.resolve(bar).unwrap(), baz);
+
+        // removing in the middle of the chain removes both aliases
+        assert_eq!(ab.remove(bar).unwrap(), baz.to_owned());
+        assert!(!ab.has(foo));
+        assert!(!ab.has(bar));
     }
 }

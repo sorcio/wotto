@@ -6,7 +6,7 @@ use crate::service::Result;
 use crate::webload::{Domain, ResolvedModule};
 use crate::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct CanonicalName<'a>(&'a str);
 
 impl<'a> TryFrom<&'a Path> for CanonicalName<'a> {
@@ -36,6 +36,12 @@ impl<'a> TryFrom<&'a PathBuf> for CanonicalName<'a> {
 
     fn try_from(value: &'a PathBuf) -> std::result::Result<Self, Self::Error> {
         Self::try_from(Path::new(value))
+    }
+}
+
+impl<'a> AsRef<str> for CanonicalName<'a> {
+    fn as_ref(&self) -> &str {
+        self.0
     }
 }
 
@@ -81,6 +87,12 @@ impl core::ops::Deref for FullyQualifiedNameBuf {
     }
 }
 
+impl AsRef<str> for FullyQualifiedNameBuf {
+    fn as_ref(&self) -> &str {
+        &self.fqn
+    }
+}
+
 impl Display for FullyQualifiedNameBuf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.fqn)
@@ -120,6 +132,10 @@ impl FullyQualifiedName {
     unsafe fn from_str_unchecked(s: &str) -> &Self {
         // Safety: FullyQualifiedNameBorrow is repr(transparent) with str
         unsafe { std::mem::transmute(s) }
+    }
+
+    pub(crate) fn alias(s: CanonicalName) -> &Self {
+        unsafe { Self::from_str_unchecked(s.0) }
     }
 }
 

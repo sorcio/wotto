@@ -325,6 +325,41 @@ mod state {
                         state.reply(response_target, response).await;
                     });
                 }
+                CommandName::Plain(x) if x == "alias" => {
+                    if !check_trust(&slf, source).await {
+                        return;
+                    }
+                    let args: Vec<_> = cmd.args.split_whitespace().collect();
+                    let response = match args[..] {
+                        [alias, refers_to] => match slf.engine().add_alias(alias, refers_to) {
+                            Ok(()) => format!("added alias {alias} -> {refers_to}"),
+                            Err(wotto_engine::Error::ModuleNotFound) => format!("target {refers_to} not found (must be a loaded module or an existing alias)"),
+                            Err(error) => {
+                                error!(err = %error, alias, refers_to, "invalid alias");
+                                "invalid alias".to_string()
+                            },
+                        },
+                        _ => {
+                            error!(?args, "invalid args to !alias");
+                            return;
+                        }
+                    };
+                    slf.reply(response_target, response).await;
+                }
+                CommandName::Plain(x) if x == "unalias" => {
+                    if !check_trust(&slf, source).await {
+                        return;
+                    }
+                    let alias = cmd.args.trim();
+                    let response = match slf.engine().remove_alias(alias) {
+                        Ok(refers_to) => format!("removed alias {alias} -> {refers_to}"),
+                        Err(wotto_engine::Error::ModuleNotFound) => {
+                            format!("no alias {alias} found")
+                        }
+                        Err(_) => "invalid name".to_string(),
+                    };
+                    slf.reply(response_target, response).await;
+                }
                 CommandName::Plain(x) if x == "permits" => {
                     if !check_trust(&slf, source).await {
                         return;

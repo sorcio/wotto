@@ -40,17 +40,17 @@ where
         Some(entry.read_owned().await)
     }
 
-    async fn entry_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<V>>
-    where
-        K: Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        let entry = {
-            let map = self.entries.lock();
-            map.get(key)?.clone()
-        };
-        Some(entry.write_owned().await)
-    }
+    // async fn entry_mut<Q>(&self, key: &Q) -> Option<ValueRefMut<V>>
+    // where
+    //     K: Borrow<Q>,
+    //     Q: Hash + Eq + ?Sized,
+    // {
+    //     let entry = {
+    //         let map = self.entries.lock();
+    //         map.get(key)?.clone()
+    //     };
+    //     Some(entry.write_owned().await)
+    // }
 
     pub(crate) async fn lock_entry_mut(&self, key: K) -> ValueRefMut<V> {
         self.entry_or_default(key).await
@@ -71,7 +71,16 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.entry_mut(key).await?.take()
+        let entry = self.entries.lock().remove(key)?;
+        entry.write_owned().await.take()
+    }
+
+    pub(crate) fn contains_key<Q>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.entries.lock().contains_key(key)
     }
 }
 
