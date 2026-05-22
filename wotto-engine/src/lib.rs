@@ -1,5 +1,3 @@
-#![feature(pointer_is_aligned)]
-
 mod assemblyscript;
 mod registry;
 #[cfg(feature = "repl")]
