@@ -414,7 +414,7 @@ mod state {
             self.engine_semaphore.acquire().await
         }
 
-        pub(crate) fn engine_epoch_timer(self: &Arc<Self>) -> impl core::future::Future {
+        pub(crate) fn engine_epoch_timer(self: &Arc<Self>) -> impl core::future::Future + use<> {
             let weak = Arc::downgrade(&self.clone());
             struct ServiceRef(Arc<BotState>);
             impl AsRef<wotto_engine::Service> for ServiceRef {
@@ -455,24 +455,27 @@ mod state {
         }
 
         pub(super) fn set_last_known_nickname(&self, nickname: String) {
-            if let Ok(mut known_nickname) = self.known_nickname.try_write() {
-                let previous_nickname = known_nickname.replace(nickname);
-                if previous_nickname != *known_nickname {
-                    info!(
-                        nickname = &*known_nickname,
-                        previous_nickname, "changed nickname"
-                    );
-                    self.client(|client| {
-                        self.discover_hostmask(
-                            client,
-                            known_nickname.as_deref().unwrap_or_default().to_string(),
-                        )
-                    });
+            match self.known_nickname.try_write() {
+                Ok(mut known_nickname) => {
+                    let previous_nickname = known_nickname.replace(nickname);
+                    if previous_nickname != *known_nickname {
+                        info!(
+                            nickname = &*known_nickname,
+                            previous_nickname, "changed nickname"
+                        );
+                        self.client(|client| {
+                            self.discover_hostmask(
+                                client,
+                                known_nickname.as_deref().unwrap_or_default().to_string(),
+                            )
+                        });
+                    }
                 }
-            } else {
-                error!(
+                _ => {
+                    error!(
                     "attempt to acquire rwlock on known_nickname failed; this should not happen"
                 );
+                }
             }
         }
 
@@ -482,12 +485,15 @@ mod state {
 
         pub(crate) fn found_hostmask(&self, nick: &str, user: &str, host: &str) {
             let usermask = UserMask::from_parts(nick, user, host);
-            if let Ok(mut known_hostmask) = self.known_hostmask.try_write() {
-                *known_hostmask = Some(usermask);
-            } else {
-                error!(
+            match self.known_hostmask.try_write() {
+                Ok(mut known_hostmask) => {
+                    *known_hostmask = Some(usermask);
+                }
+                _ => {
+                    error!(
                     "attempt to acquire rwlock on known_hostmask failed; this should not happen"
                 );
+                }
             }
         }
     }

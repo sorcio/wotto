@@ -1,4 +1,3 @@
-#![feature(round_char_boundary)]
 #![feature(arbitrary_self_types)]
 
 mod bot;

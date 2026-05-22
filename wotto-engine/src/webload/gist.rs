@@ -116,13 +116,14 @@ impl<'a> Gist<'a> {
     }
 
     fn eq_with_blob(&self, url: &'_ Url) -> bool {
-        if let Ok(other) = Gist::parse(url) {
-            self.user() == other.user()
-                && self.gist_id() == other.gist_id()
-                && self.blob().is_some()
-                && self.blob() == other.blob()
-        } else {
-            false
+        match Gist::parse(url) {
+            Ok(other) => {
+                self.user() == other.user()
+                    && self.gist_id() == other.gist_id()
+                    && self.blob().is_some()
+                    && self.blob() == other.blob()
+            }
+            _ => false,
         }
     }
 }
@@ -289,7 +290,7 @@ fn client() -> Result<reqwest::Client> {
         .map_err(WebError::ReqwestError)?)
 }
 
-pub(super) async fn resolve_gist(url: &Url) -> Result<impl ResolverResult> {
+pub(super) async fn resolve_gist(url: &Url) -> Result<impl ResolverResult + use<>> {
     debug_assert_eq!(url.scheme(), "https");
     debug_assert!(matches!(
         url.host(),

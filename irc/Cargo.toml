@@ -9,7 +9,7 @@ categories = ["asynchronous", "network-programming"]
 documentation = "https://docs.rs/irc/"
 repository = "https://github.com/aatxe/irc"
 readme = "README.md"
-edition = "2018"
+edition = "2024"
 
 
 [badges]
