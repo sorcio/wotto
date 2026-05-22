@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 use tokio::sync::mpsc;
 
 use crate::service::{Command, Result as EngineResult, Service};

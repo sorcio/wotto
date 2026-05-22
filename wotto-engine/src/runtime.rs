@@ -1,7 +1,7 @@
 //! Functions exported to WASM modules.
 
-use crate::assemblyscript::{env_abort, AssemblyScriptString};
-use crate::service::{get_memory, Error, HasInput, HasOutput, WResult};
+use crate::assemblyscript::{AssemblyScriptString, env_abort};
+use crate::service::{Error, HasInput, HasOutput, WResult, get_memory};
 use wasmtime::*;
 
 /// AssemblyScript-style print

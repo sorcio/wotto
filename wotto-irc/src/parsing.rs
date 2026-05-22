@@ -3,7 +3,7 @@ use nom::bytes::complete::tag;
 use nom::character::complete::{alpha1, alphanumeric1, hex_digit1, one_of, satisfy, space0};
 use nom::combinator::{eof, map, recognize};
 use nom::multi::{count, many0, many0_count, many1};
-use nom::sequence::{delimited, pair, preceded, separated_pair, terminated, Tuple};
+use nom::sequence::{Tuple, delimited, pair, preceded, separated_pair, terminated};
 use nom::{Finish, IResult};
 
 use crate::bot::{BotCommand, CommandName};
