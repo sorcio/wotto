@@ -18,8 +18,11 @@ use crate::{runtime as rt, webload};
 
 use self::utils::EpochTimer;
 
+const WASM_PAGE_BYTES: usize = 1 << 16;
 const MEMORY_LIMIT_BYTES: usize = 1 << 20;
+const MEMORY_COUNT_LIMIT: usize = MEMORY_LIMIT_BYTES / WASM_PAGE_BYTES;
 const TABLE_ELEMENT_LIMIT: usize = 10 << 10;
+const TABLE_COUNT_LIMIT: usize = 10_000;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -536,6 +539,14 @@ impl ResourceLimiter for RuntimeLimits {
         }
         Ok(desired <= TABLE_ELEMENT_LIMIT)
     }
+
+    fn memories(&self) -> usize {
+        MEMORY_COUNT_LIMIT
+    }
+
+    fn tables(&self) -> usize {
+        TABLE_COUNT_LIMIT
+    }
 }
 
 pub(crate) trait HasInput {
@@ -637,6 +648,18 @@ mod tests {
     }
 
     #[test]
+    fn allows_zero_page_memories_at_count_limit() {
+        let memories = "(memory 0)\n".repeat(MEMORY_COUNT_LIMIT);
+        instantiate(&format!("(module {memories})")).expect("memories exactly at count limit");
+    }
+
+    #[test]
+    fn rejects_zero_page_memories_above_count_limit() {
+        let memories = "(memory 0)\n".repeat(MEMORY_COUNT_LIMIT + 1);
+        instantiate(&format!("(module {memories})")).expect_err("memories above count limit");
+    }
+
+    #[test]
     fn memory_grow_past_total_limit_returns_failure() {
         let engine = make_engine();
         let module = Module::new(
@@ -717,6 +740,12 @@ mod tests {
     }
 
     #[test]
+    fn table_count_limit_is_enforced() {
+        let tables = "(table 0 funcref)\n".repeat(TABLE_COUNT_LIMIT + 1);
+        instantiate(&format!("(module {tables})")).expect_err("tables above count limit");
+    }
+
+    #[test]
     fn memory64_is_rejected() {
         let engine = make_engine();
         assert!(
@@ -736,8 +765,10 @@ mod tests {
 
     #[test]
     fn constants_match_existing_resource_budget() {
-        assert_eq!(MEMORY_LIMIT_BYTES, 16 * PAGE);
+        assert_eq!(WASM_PAGE_BYTES, PAGE);
+        assert_eq!(MEMORY_LIMIT_BYTES, MEMORY_COUNT_LIMIT * WASM_PAGE_BYTES);
         assert_eq!(TABLE_ELEMENT_LIMIT, 10 * 1024);
+        assert_eq!(TABLE_COUNT_LIMIT, 10_000);
     }
 }
 
