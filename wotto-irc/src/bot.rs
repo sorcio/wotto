@@ -57,7 +57,9 @@ pub async fn bot_main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn ctrl_c_monitor(state: std::sync::Weak<BotState>) {
-    let Ok(_) = tokio::signal::ctrl_c().await else { return; };
+    let Ok(_) = tokio::signal::ctrl_c().await else {
+        return;
+    };
     if let Some(state) = state.upgrade() {
         info!("received Ctrl-C; requesting quit");
         state.request_quit();
@@ -519,7 +521,9 @@ async fn irc_stream_handler(
             Command::PRIVMSG(_, ref text) => {
                 if let Ok(cmd) = BotCommand::parse(&[], text) {
                     info!(cmd = cmd.as_value(), "got command");
-                    let Some(response_target) = message.response_target().map(str::to_owned) else { break; };
+                    let Some(response_target) = message.response_target().map(str::to_owned) else {
+                        break;
+                    };
                     let w = Arc::downgrade(&state);
                     handle_command(
                         message.prefix,
@@ -597,7 +601,9 @@ fn handle_command<F, Fut>(
     let run_task = tokio::task::Builder::new().name(&task_name);
     run_task
         .spawn(async move {
-            let Ok(permit) = state.engine_permit().await else { return; };
+            let Ok(permit) = state.engine_permit().await else {
+                return;
+            };
             match state
                 .engine()
                 .run_module(&module_name, &entry_point, &args)
@@ -675,7 +681,9 @@ async fn web_server(state: std::sync::Weak<BotState>) {
             move |module: String| {
                 let state = state.clone();
                 async move {
-                    let Some(state) = state.upgrade() else { return; };
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
                     match state.engine().load_module(module.clone()).await {
                         Ok(_) => info!(module, "loaded module"),
                         Err(err) => error!(module, %err, "cannot load module"),
@@ -697,7 +705,9 @@ async fn web_server(state: std::sync::Weak<BotState>) {
                 };
                 let state = state.clone();
                 async move {
-                    let Some(state) = state.upgrade() else { return; };
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
                     match state.client(|client| client.send_join(&chan_name)) {
                         Some(Ok(_)) => info!(channel = chan_name, "joined channel"),
                         Some(Err(err)) => error!(channel = chan_name, %err, "cannot join channel"),

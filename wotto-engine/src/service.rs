@@ -129,7 +129,7 @@ impl core::ops::Deref for FullyQualifiedNameBuf {
 
     #[inline]
     fn deref(&self) -> &Self::Target {
-        unsafe { FullyQualifiedName::from_str_unchecked(&self.fqn) }
+        FullyQualifiedName::from_str_unchecked(&self.fqn)
     }
 }
 
@@ -166,12 +166,13 @@ impl FullyQualifiedName {
         } else {
             Domain::Builtin
         };
-        Ok(unsafe { Self::from_str_unchecked(s) })
+        Ok(Self::from_str_unchecked(s))
     }
 
-    unsafe fn from_str_unchecked(s: &str) -> &Self {
-        // Safety: FullyQualifiedNameBorrow is repr(transparent) with str
-        unsafe { std::mem::transmute(s) }
+    fn from_str_unchecked(s: &str) -> &Self {
+        // SAFETY: FullyQualifiedName is a transparent wrapper around `str`,
+        // so it has the same layout and pointer metadata as the source `str`.
+        unsafe { &*(s as *const str as *const Self) }
     }
 }
 
@@ -243,7 +244,9 @@ impl Service {
             loop {
                 epoch_timer.wait();
                 std::thread::sleep(interval);
-                let Some(slf) = myself() else { break; };
+                let Some(slf) = myself() else {
+                    break;
+                };
                 slf.as_ref().engine.increment_epoch();
             }
         })
@@ -481,7 +484,9 @@ impl HasInput for RuntimeData {
 
 impl HasOutput for RuntimeData {
     fn output(&mut self, text: &str) {
-        let Some(available) = self.capacity.checked_sub(self.output.len()) else { return; };
+        let Some(available) = self.capacity.checked_sub(self.output.len()) else {
+            return;
+        };
         self.output += &text[..available.min(text.len())];
     }
 }
@@ -527,7 +532,7 @@ mod utils {
             self.cond_var.notify_all();
         }
 
-        pub(super) fn start(&self) -> EpochTimerGuard {
+        pub(super) fn start(&self) -> EpochTimerGuard<'_> {
             self.increment();
             EpochTimerGuard(self)
         }
