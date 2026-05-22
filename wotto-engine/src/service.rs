@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use thiserror::Error;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tracing::info;
 use wasmtime::*;
 
@@ -18,10 +18,13 @@ use crate::{runtime as rt, webload};
 
 use self::utils::EpochTimer;
 
+const MEMORY_LIMIT_BYTES: usize = 1 << 20;
+const TABLE_ELEMENT_LIMIT: usize = 10 << 10;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("wasm runtime error: {0}")]
-    Wasm(anyhow::Error),
+    Wasm(wasmtime::Error),
     #[error("invalid module name")]
     InvalidModuleName,
     #[error("no such module")]
@@ -45,7 +48,7 @@ pub enum Error {
 }
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
-pub(crate) type WResult<T> = std::result::Result<T, anyhow::Error>;
+pub(crate) type WResult<T> = wasmtime::Result<T>;
 
 #[derive(Debug)]
 pub enum Command {
@@ -205,7 +208,9 @@ fn make_engine() -> Engine {
     config
         .debug_info(true)
         .wasm_backtrace_details(WasmBacktraceDetails::Enable)
-        .async_support(true)
+        .wasm_multi_memory(true)
+        .wasm_memory64(false)
+        .shared_memory(false)
         .epoch_interruption(true)
         .cranelift_opt_level(OptLevel::Speed);
 
@@ -449,22 +454,87 @@ struct RuntimeData {
     message: String,
     output: String,
     capacity: usize,
-    limits: StoreLimits,
+    limits: RuntimeLimits,
 }
 
 impl RuntimeData {
     fn new(message: String, output_capacity: usize) -> Self {
         let output = String::with_capacity(output_capacity);
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(1 << 20)
-            .table_elements(10 << 10)
-            .build();
         Self {
             message,
             output,
             capacity: output_capacity,
-            limits,
+            limits: RuntimeLimits::new(),
         }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RuntimeLimits {
+    memory_bytes: usize,
+    pending_memory_delta: Option<usize>,
+}
+
+impl RuntimeLimits {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn clear_successful_pending_memory_grow(&mut self) {
+        self.pending_memory_delta = None;
+    }
+}
+
+impl ResourceLimiter for RuntimeLimits {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        self.clear_successful_pending_memory_grow();
+
+        if matches!(maximum, Some(maximum) if desired > maximum) {
+            return Ok(false);
+        }
+
+        let Some(delta) = desired.checked_sub(current) else {
+            return Ok(false);
+        };
+        if delta == 0 {
+            return Ok(true);
+        }
+
+        let Some(next_memory_bytes) = self.memory_bytes.checked_add(delta) else {
+            return Ok(false);
+        };
+        if next_memory_bytes > MEMORY_LIMIT_BYTES {
+            return Ok(false);
+        }
+
+        self.memory_bytes = next_memory_bytes;
+        self.pending_memory_delta = Some(delta);
+        Ok(true)
+    }
+
+    fn memory_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        if let Some(delta) = self.pending_memory_delta.take() {
+            self.memory_bytes = self.memory_bytes.saturating_sub(delta);
+        }
+        tracing::debug!(%error, "wasm memory growth failed after limit reservation");
+        Ok(())
+    }
+
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        if matches!(maximum, Some(maximum) if desired > maximum) {
+            return Ok(false);
+        }
+        Ok(desired <= TABLE_ELEMENT_LIMIT)
     }
 }
 
@@ -509,6 +579,166 @@ fn canonicalize_name<P: AsRef<Path>>(path: P) -> Result<String> {
         .to_str()
         .ok_or(Error::InvalidModuleName)?
         .to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE: usize = 1 << 16;
+
+    fn limited_store(engine: &Engine) -> Store<RuntimeData> {
+        let mut store = Store::new(engine, RuntimeData::new(String::new(), 512));
+        store.limiter(|state| &mut state.limits);
+        store.set_epoch_deadline(1);
+        store
+    }
+
+    fn instantiate(wat: &str) -> wasmtime::Result<()> {
+        let engine = make_engine();
+        let module = Module::new(&engine, wat)?;
+        let mut store = limited_store(&engine);
+        Instance::new(&mut store, &module, &[])?;
+        Ok(())
+    }
+
+    #[test]
+    fn allows_single_memory_at_total_limit() {
+        instantiate("(module (memory 16))").expect("memory exactly at aggregate limit");
+    }
+
+    #[test]
+    fn rejects_initial_memory_above_total_limit() {
+        instantiate("(module (memory 17))").expect_err("memory above aggregate limit");
+    }
+
+    #[test]
+    fn allows_multiple_memories_at_combined_total_limit() {
+        instantiate(
+            r#"
+            (module
+              (memory 8)
+              (memory 8))
+            "#,
+        )
+        .expect("combined memories exactly at aggregate limit");
+    }
+
+    #[test]
+    fn rejects_multiple_memories_above_combined_total_limit() {
+        instantiate(
+            r#"
+            (module
+              (memory 16)
+              (memory 1))
+            "#,
+        )
+        .expect_err("combined memories above aggregate limit");
+    }
+
+    #[test]
+    fn memory_grow_past_total_limit_returns_failure() {
+        let engine = make_engine();
+        let module = Module::new(
+            &engine,
+            r#"
+            (module
+              (memory 16 100)
+              (func (export "grow") (result i32)
+                i32.const 1
+                memory.grow))
+            "#,
+        )
+        .expect("compile memory grow fixture");
+        let mut store = limited_store(&engine);
+        let instance = Instance::new(&mut store, &module, &[]).expect("instantiate grow fixture");
+        let grow = instance
+            .get_typed_func::<(), i32>(&mut store, "grow")
+            .expect("fixture exports grow");
+
+        assert_eq!(grow.call(&mut store, ()).expect("call grow"), -1);
+    }
+
+    #[test]
+    fn denied_growth_does_not_poison_later_valid_growth() {
+        let engine = make_engine();
+        let module = Module::new(
+            &engine,
+            r#"
+            (module
+              (memory 15 100)
+              (func (export "grow2") (result i32)
+                i32.const 2
+                memory.grow)
+              (func (export "grow1") (result i32)
+                i32.const 1
+                memory.grow))
+            "#,
+        )
+        .expect("compile retry grow fixture");
+        let mut store = limited_store(&engine);
+        let instance = Instance::new(&mut store, &module, &[]).expect("instantiate grow fixture");
+        let grow2 = instance
+            .get_typed_func::<(), i32>(&mut store, "grow2")
+            .expect("fixture exports grow2");
+        let grow1 = instance
+            .get_typed_func::<(), i32>(&mut store, "grow1")
+            .expect("fixture exports grow1");
+
+        assert_eq!(grow2.call(&mut store, ()).expect("call grow2"), -1);
+        assert_eq!(grow1.call(&mut store, ()).expect("call grow1"), 15);
+    }
+
+    #[test]
+    fn failed_growth_reservation_rolls_back() {
+        let mut limits = RuntimeLimits::new();
+
+        assert!(
+            limits
+                .memory_growing(0, MEMORY_LIMIT_BYTES, Some(MEMORY_LIMIT_BYTES * 2))
+                .expect("reserve memory")
+        );
+        limits
+            .memory_grow_failed(wasmtime::Error::msg("simulated allocation failure"))
+            .expect("rollback failed grow");
+
+        assert_eq!(limits.memory_bytes, 0);
+        assert!(
+            limits
+                .memory_growing(0, MEMORY_LIMIT_BYTES, Some(MEMORY_LIMIT_BYTES))
+                .expect("reserve memory after rollback")
+        );
+    }
+
+    #[test]
+    fn table_limit_is_still_enforced() {
+        instantiate("(module (table 10241 funcref))").expect_err("table above element limit");
+        instantiate("(module (table 10240 funcref))").expect("table at element limit");
+    }
+
+    #[test]
+    fn memory64_is_rejected() {
+        let engine = make_engine();
+        assert!(
+            Module::new(&engine, "(module (memory i64 1))").is_err(),
+            "memory64 should remain disabled"
+        );
+    }
+
+    #[test]
+    fn shared_memory_is_rejected() {
+        let engine = make_engine();
+        assert!(
+            Module::new(&engine, "(module (memory 1 1 shared))").is_err(),
+            "shared memory should remain disabled"
+        );
+    }
+
+    #[test]
+    fn constants_match_existing_resource_budget() {
+        assert_eq!(MEMORY_LIMIT_BYTES, 16 * PAGE);
+        assert_eq!(TABLE_ELEMENT_LIMIT, 10 * 1024);
+    }
 }
 
 mod utils {

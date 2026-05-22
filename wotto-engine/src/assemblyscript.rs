@@ -6,7 +6,7 @@ use std::ops::Range;
 
 use wasmtime::{Caller, Trap};
 
-use crate::service::{get_memory, Error, WResult};
+use crate::service::{Error, WResult, get_memory};
 
 #[allow(dead_code)]
 const AS_CLASS_ID_OBJECT: u32 = 0;

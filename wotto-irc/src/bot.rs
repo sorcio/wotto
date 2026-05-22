@@ -114,11 +114,11 @@ impl std::str::FromStr for UserMask {
 
 mod state {
     use std::fmt::Debug;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
-    use irc::client::prelude::Config;
     use irc::client::Client;
+    use irc::client::prelude::Config;
     use irc::proto::Prefix;
     use tokio::sync::{AcquireError, RwLock, Semaphore};
     use tracing::{error, info, trace};
@@ -473,8 +473,8 @@ mod state {
                 }
                 _ => {
                     error!(
-                    "attempt to acquire rwlock on known_nickname failed; this should not happen"
-                );
+                        "attempt to acquire rwlock on known_nickname failed; this should not happen"
+                    );
                 }
             }
         }
@@ -491,8 +491,8 @@ mod state {
                 }
                 _ => {
                     error!(
-                    "attempt to acquire rwlock on known_hostmask failed; this should not happen"
-                );
+                        "attempt to acquire rwlock on known_hostmask failed; this should not happen"
+                    );
                 }
             }
         }
