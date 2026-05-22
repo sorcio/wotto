@@ -484,7 +484,9 @@ impl HasInput for RuntimeData {
 
 impl HasOutput for RuntimeData {
     fn output(&mut self, text: &str) {
-        let Some(available) = self.capacity.checked_sub(self.output.len()) else { return; };
+        let Some(available) = self.capacity.checked_sub(self.output.len()) else {
+            return;
+        };
         self.output += &text[..available.min(text.len())];
     }
 }
@@ -530,7 +532,7 @@ mod utils {
             self.cond_var.notify_all();
         }
 
-        pub(super) fn start(&self) -> EpochTimerGuard {
+        pub(super) fn start(&self) -> EpochTimerGuard<'_> {
             self.increment();
             EpochTimerGuard(self)
         }
